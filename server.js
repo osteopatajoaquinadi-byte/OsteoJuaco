@@ -274,7 +274,7 @@ app.post("/webhook", async (req, res) => {
 
         // Enviar respuesta a Instagram
         await axios.post(
-          `https://graph.facebook.com/v19.0/me/messages`,
+         `https://graph.facebook.com/v19.0/${process.env.INSTAGRAM_ACCOUNT_ID}/messages`
           {
             recipient: { id: senderId },
             message:   { text: reply },
