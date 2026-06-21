@@ -356,10 +356,20 @@ app.post("/webhook", async (req, res) => {
 
   for (const entry of body.entry || []) {
     for (const event of entry.messaging || []) {
-      const senderId = event.sender?.id;
-      const text     = event.message?.text;
+      const senderId    = event.sender?.id;
+      const recipientId = event.recipient?.id;
+      const text        = event.message?.text;
 
-      if (!senderId || !text || event.message?.is_echo) continue;
+      // Ignorar mensajes sin contenido
+      if (!senderId || !text) continue;
+
+      // Ignorar ecos del propio bot (la nueva API de Instagram a veces no marca is_echo)
+      // Un mensaje entrante real siempre tiene recipient.id === INSTAGRAM_ACCOUNT_ID
+      if (event.message?.is_echo) continue;
+      if (recipientId && recipientId !== INSTAGRAM_ACCOUNT_ID) {
+        console.log(`🔄 Ignorando eco (recipient=${recipientId}, sender=${senderId})`);
+        continue;
+      }
 
       console.log(`📩 Mensaje de ${senderId}: ${text}`);
 
