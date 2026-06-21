@@ -444,13 +444,13 @@ app.post("/webhook", async (req, res) => {
 // ── Función para enviar mensaje a Instagram ───────────────────
 async function sendInstagramMessage(senderId, text) {
   await axios.post(
-    `https://graph.facebook.com/v19.0/${INSTAGRAM_ACCOUNT_ID}/messages`,
+    `https://graph.instagram.com/v25.0/${INSTAGRAM_ACCOUNT_ID}/messages`,
     {
       recipient: { id: senderId },
       message:   { text },
     },
     {
-      params: { access_token: PAGE_ACCESS_TOKEN },
+      headers: { Authorization: `Bearer ${PAGE_ACCESS_TOKEN}` },
     }
   );
   console.log(`✅ Respuesta enviada a ${senderId}`);
