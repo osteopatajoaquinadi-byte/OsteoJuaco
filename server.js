@@ -95,13 +95,16 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
       "CUSTOM": "CUSTOM",
       "OWNER_CUSTOM": "OWNER_CUSTOM",
     };
+    
+    // Solo pasar los campos mínimos requeridos por Writer V2
+    // Pasar campos extra causa conflictos de resource type
     const mappedLocation = location ? {
-      ...location,
       locationType: locationTypeMap[location.locationType] || "OWNER_BUSINESS",
-    } : null;
+    } : { locationType: "OWNER_BUSINESS" };
 
-    // Asegurar que resource tenga al menos id
-    const mappedResource = resource ? { id: resource.id || resource } : null;
+    // Resource: solo el id, sin typeId ni otros campos que causan conflicto
+    const resourceId = resource?.id || resource;
+    const mappedResource = resourceId ? { id: resourceId } : null;
 
     const bookingBody = {
       booking: {
@@ -111,7 +114,7 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
             startDate: slotStart,
             ...(slotEnd && { endDate: slotEnd }),
             ...(mappedResource && { resource: mappedResource }),
-            ...(mappedLocation && { location: mappedLocation }),
+            location: mappedLocation,
             ...(scheduleId && { scheduleId }),
           },
         },
@@ -123,6 +126,11 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
         },
         numberOfParticipants: 1,
         selectedPaymentOption: "OFFLINE",
+      },
+      options: {
+        flowControlSettings: {
+          skipAvailabilityValidation: true,
+        },
       },
     };
 
