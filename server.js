@@ -91,24 +91,8 @@ async function getAvailableSlots(serviceId) {
 
 // ── Crear reserva en Wix ──────────────────────────────────────
 async function createWixBooking(serviceId, slotStart, name, email, phone, slotEnd, resource, location, scheduleId) {
+  // Intentar con el endpoint Bookings v2 (formato simple, no requiere resource.id)
   try {
-    // Wix Time Slots devuelve locationType: "BUSINESS" pero Bookings Writer espera "OWNER_BUSINESS"
-    const locationTypeMap = {
-      "BUSINESS": "OWNER_BUSINESS",
-      "CUSTOM": "CUSTOM",
-      "OWNER_CUSTOM": "OWNER_CUSTOM",
-    };
-    
-    // Solo pasar los campos mínimos requeridos por Writer V2
-    // Pasar campos extra causa conflictos de resource type
-    const mappedLocation = location ? {
-      locationType: locationTypeMap[location.locationType] || "OWNER_BUSINESS",
-    } : { locationType: "OWNER_BUSINESS" };
-
-    // Resource: solo el id, sin typeId ni otros campos que causan conflicto
-    const resourceId = resource?.id || resource;
-    const mappedResource = resourceId ? { id: resourceId } : null;
-
     const bookingBody = {
       booking: {
         bookedEntity: {
@@ -116,10 +100,11 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
             serviceId: serviceId,
             startDate: slotStart,
             ...(slotEnd && { endDate: slotEnd }),
-            ...(mappedResource && { resource: mappedResource }),
-            location: mappedLocation,
             ...(scheduleId && { scheduleId }),
             timezone: "America/Santiago",
+            location: {
+              locationType: "OWNER_BUSINESS",
+            },
           },
         },
         contactDetails: {
@@ -138,24 +123,77 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
       },
     };
 
-    console.log("📤 Wix booking request:", JSON.stringify(bookingBody, null, 2));
+    console.log("📤 Wix booking request (Writer V2):", JSON.stringify(bookingBody, null, 2));
 
     const response = await axios.post(
       "https://www.wixapis.com/_api/bookings-service/v2/bookings",
       bookingBody,
       { headers: wixHeaders }
     );
-    return {
-      success: true,
-      bookingId: response.data?.booking?.id || response.data?.booking?._id || "confirmado",
-      status: response.data?.booking?.status || "CREATED",
-    };
+    
+    const bookingId = response.data?.booking?.id || response.data?.booking?._id || "confirmado";
+    const status = response.data?.booking?.status || "CREATED";
+    
+    // Si la reserva quedó en CREATED, intentar confirmarla automáticamente
+    if (status === "CREATED" && bookingId && bookingId !== "confirmado") {
+      try {
+        await axios.post(
+          `https://www.wixapis.com/_api/bookings-service/v2/bookings/${bookingId}/confirm`,
+          { revision: response.data?.booking?.revision || "1" },
+          { headers: wixHeaders }
+        );
+        console.log("✅ Booking confirmado automáticamente");
+        return { success: true, bookingId, status: "CONFIRMED" };
+      } catch (confirmErr) {
+        console.log("⚠️ Booking creado pero no confirmado:", confirmErr.response?.data?.message || confirmErr.message);
+        return { success: true, bookingId, status };
+      }
+    }
+    
+    return { success: true, bookingId, status };
   } catch (error) {
-    console.error("❌ Error Wix booking:", error.response?.status, error.response?.data || error.message);
-    return {
-      success: false,
-      error: "No se pudo crear la reserva. Sugiere al paciente agendar directamente en www.sakros.cl",
-    };
+    console.error("❌ Error Wix booking Writer V2:", error.response?.status, error.response?.data || error.message);
+    
+    // Fallback: intentar con el endpoint viejo /bookings/v2/bookings (formato legacy)
+    try {
+      console.log("🔄 Intentando endpoint legacy...");
+      const legacyBody = {
+        booking: {
+          selectedPaymentOption: "OFFLINE",
+          contactDetails: {
+            firstName: name.split(" ")[0],
+            lastName:  name.split(" ").slice(1).join(" ") || ".",
+            ...(email && { email }),
+            ...(phone && { phone }),
+          },
+          bookedEntity: {
+            slot: {
+              serviceId: serviceId,
+              startDate: slotStart,
+              ...(slotEnd && { endDate: slotEnd }),
+              ...(scheduleId && { scheduleId }),
+            },
+          },
+        },
+      };
+
+      const response = await axios.post(
+        "https://www.wixapis.com/bookings/v2/bookings",
+        legacyBody,
+        { headers: wixHeaders }
+      );
+      return {
+        success: true,
+        bookingId: response.data?.booking?.id || "confirmado-legacy",
+        status: response.data?.booking?.status || "CREATED",
+      };
+    } catch (legacyError) {
+      console.error("❌ Error Wix booking legacy:", legacyError.response?.status, legacyError.response?.data || legacyError.message);
+      return {
+        success: false,
+        error: "No se pudo crear la reserva. Sugiere al paciente agendar directamente en www.sakros.cl",
+      };
+    }
   }
 }
 
