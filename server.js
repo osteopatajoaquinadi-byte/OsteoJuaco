@@ -282,7 +282,7 @@ Director de Clínica Sakros en Viña del Mar, Chile.
 
 ## MÉTODO R.E.S.T. — 4 PILARES (solo mencionar, no enseñar)
 - Duración del programa: 21 días (3 semanas). NUNCA decir "4 semanas" ni "un mes".
-- Precio: $39.990 CLP (antes $59.990)
+- Precio de lanzamiento: $39.990 CLP
 1. Ritmo circadiano — sincronizar luz, temperatura, horarios
 2. Eje intestino-cerebro — relación microbiota-sueño
 3. Sistema nervioso autónomo — activación vagal, regulación simpática
