@@ -59,15 +59,23 @@ async function getAvailableSlots(serviceId) {
     console.log("📦 Wix response keys:", Object.keys(response.data || {}));
 
     const slots = response.data?.timeSlots || response.data?.availabilityEntries || [];
+    
+    // Log primer slot raw para debug
+    if (slots.length > 0) {
+      console.log("🔍 Primer slot raw:", JSON.stringify(slots[0], null, 2));
+    }
+    
     return slots
       .filter(s => s.bookable !== false)
       .slice(0, 5)
       .map(s => {
         const startDate = s.localStartDate || s.slot?.startDate || s.startDate;
+        const resource = s.resources?.[0] || s.resource || null;
         return {
           start: startDate,
           endDate: s.localEndDate || s.slot?.endDate || s.endDate,
-          resource: s.resources?.[0] || s.resource || null,
+          resource: resource,
+          scheduleId: resource?.scheduleId || s.scheduleId || null,
           location: s.location || null,
           label: formatSlotDate(startDate),
         };
@@ -79,7 +87,7 @@ async function getAvailableSlots(serviceId) {
 }
 
 // ── Crear reserva en Wix ──────────────────────────────────────
-async function createWixBooking(serviceId, slotStart, name, email, phone, slotEnd, resource, location) {
+async function createWixBooking(serviceId, slotStart, name, email, phone, slotEnd, resource, location, scheduleId) {
   try {
     // Wix Time Slots devuelve locationType: "BUSINESS" pero Bookings Writer espera "OWNER_BUSINESS"
     const locationTypeMap = {
@@ -92,6 +100,9 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
       locationType: locationTypeMap[location.locationType] || "OWNER_BUSINESS",
     } : null;
 
+    // Asegurar que resource tenga al menos id
+    const mappedResource = resource ? { id: resource.id || resource } : null;
+
     const bookingBody = {
       booking: {
         bookedEntity: {
@@ -99,8 +110,9 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
             serviceId: serviceId,
             startDate: slotStart,
             ...(slotEnd && { endDate: slotEnd }),
-            ...(resource && { resource }),
+            ...(mappedResource && { resource: mappedResource }),
             ...(mappedLocation && { location: mappedLocation }),
+            ...(scheduleId && { scheduleId }),
           },
         },
         contactDetails: {
@@ -200,6 +212,10 @@ const CLAUDE_TOOLS = [
           type: "object",
           description: "El objeto location del slot (copiado directamente del resultado de consultar_disponibilidad, si está disponible)",
         },
+        scheduleId: {
+          type: "string",
+          description: "El scheduleId del slot (copiado directamente del resultado de consultar_disponibilidad). OBLIGATORIO para crear la reserva.",
+        },
       },
       required: ["servicio", "horario", "nombre"],
     },
@@ -233,7 +249,8 @@ async function executeTool(toolName, toolInput) {
       toolInput.telefono || "",
       toolInput.horario_fin || null,
       toolInput.resource || null,
-      toolInput.location || null
+      toolInput.location || null,
+      toolInput.scheduleId || null
     );
     console.log(`📋 Reserva: ${result.success ? "✅ " + result.bookingId : "❌ " + result.error}`);
     return JSON.stringify(result);
