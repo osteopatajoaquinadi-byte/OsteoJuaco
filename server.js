@@ -60,37 +60,26 @@ async function getAvailableSlots(serviceId) {
 
     const slots = response.data?.timeSlots || response.data?.availabilityEntries || [];
     
-    // Log primer slot: solo las keys y sus tipos para debug
+    // Log primer slot para debug
     if (slots.length > 0) {
       const s0 = slots[0];
-      console.log("🔍 Slot keys:", Object.keys(s0));
-      console.log("🔍 Slot localStartDate:", s0.localStartDate);
-      console.log("🔍 Slot startDate:", s0.startDate);
-      console.log("🔍 Slot resources:", JSON.stringify(s0.resources?.[0] || "none"));
-      console.log("🔍 Slot location:", JSON.stringify(s0.location || "none"));
-      console.log("🔍 Slot scheduleId:", s0.scheduleId || s0.resources?.[0]?.scheduleId || "none");
+      console.log("🔍 availableResources[0]:", JSON.stringify(s0.availableResources?.[0] || "none"));
     }
     
     return slots
       .filter(s => s.bookable !== false)
       .slice(0, 5)
       .map(s => {
-        const resource = s.resources?.[0] || s.resource || null;
-        // Guardar AMBOS formatos: local (para mostrar al usuario) y UTC (para booking)
-        const localStart = s.localStartDate || s.slot?.startDate;
-        const localEnd = s.localEndDate || s.slot?.endDate;
-        const utcStart = s.startDate || null;  // Wix puede devolver esto como UTC
-        const utcEnd = s.endDate || null;
+        // El campo correcto es availableResources (no resources)
+        const resource = s.availableResources?.[0] || null;
+        const localStart = s.localStartDate;
+        const localEnd = s.localEndDate;
         
         return {
-          // Para booking: preferir UTC si existe, sino local
-          start: utcStart || localStart,
-          endDate: utcEnd || localEnd,
-          // Guardar local también para que Claude lo use al mostrar al usuario
-          localStart: localStart,
-          localEnd: localEnd,
+          start: localStart,
+          endDate: localEnd,
           resource: resource,
-          scheduleId: resource?.scheduleId || s.scheduleId || null,
+          scheduleId: s.scheduleId || null,  // está en el nivel del slot, no del resource
           location: s.location || null,
           label: formatSlotDate(localStart),
         };
@@ -131,6 +120,7 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
             ...(mappedResource && { resource: mappedResource }),
             location: mappedLocation,
             ...(scheduleId && { scheduleId }),
+            timezone: "America/Santiago",
           },
         },
         contactDetails: {
