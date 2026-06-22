@@ -160,6 +160,7 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
       const legacyBody = {
         booking: {
           selectedPaymentOption: "OFFLINE",
+          totalParticipants: 1,
           contactDetails: {
             firstName: name.split(" ")[0],
             lastName:  name.split(" ").slice(1).join(" ") || ".",
@@ -172,10 +173,14 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
               startDate: slotStart,
               ...(slotEnd && { endDate: slotEnd }),
               ...(scheduleId && { scheduleId }),
+              timezone: "America/Santiago",
+              location: { locationType: "OWNER_BUSINESS" },
             },
           },
         },
       };
+
+      console.log("📤 Wix legacy request:", JSON.stringify(legacyBody, null, 2));
 
       const response = await axios.post(
         "https://www.wixapis.com/bookings/v2/bookings",
