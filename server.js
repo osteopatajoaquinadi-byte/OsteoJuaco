@@ -60,10 +60,9 @@ async function getAvailableSlots(serviceId) {
 
     const slots = response.data?.timeSlots || response.data?.availabilityEntries || [];
     
-    // Log primer slot para debug
+    // Log primer slot COMPLETO para debug
     if (slots.length > 0) {
-      const s0 = slots[0];
-      console.log("🔍 availableResources[0]:", JSON.stringify(s0.availableResources?.[0] || "none"));
+      console.log("🔍 SLOT COMPLETO:", JSON.stringify(slots[0]));
     }
     
     return slots
