@@ -81,6 +81,17 @@ async function getAvailableSlots(serviceId) {
 // ── Crear reserva en Wix ──────────────────────────────────────
 async function createWixBooking(serviceId, slotStart, name, email, phone, slotEnd, resource, location) {
   try {
+    // Wix Time Slots devuelve locationType: "BUSINESS" pero Bookings Writer espera "OWNER_BUSINESS"
+    const locationTypeMap = {
+      "BUSINESS": "OWNER_BUSINESS",
+      "CUSTOM": "CUSTOM",
+      "OWNER_CUSTOM": "OWNER_CUSTOM",
+    };
+    const mappedLocation = location ? {
+      ...location,
+      locationType: locationTypeMap[location.locationType] || "OWNER_BUSINESS",
+    } : null;
+
     const bookingBody = {
       booking: {
         bookedEntity: {
@@ -89,7 +100,7 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
             startDate: slotStart,
             ...(slotEnd && { endDate: slotEnd }),
             ...(resource && { resource }),
-            ...(location && { location }),
+            ...(mappedLocation && { location: mappedLocation }),
           },
         },
         contactDetails: {
