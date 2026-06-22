@@ -60,24 +60,39 @@ async function getAvailableSlots(serviceId) {
 
     const slots = response.data?.timeSlots || response.data?.availabilityEntries || [];
     
-    // Log primer slot raw para debug
+    // Log primer slot: solo las keys y sus tipos para debug
     if (slots.length > 0) {
-      console.log("🔍 Primer slot raw:", JSON.stringify(slots[0], null, 2));
+      const s0 = slots[0];
+      console.log("🔍 Slot keys:", Object.keys(s0));
+      console.log("🔍 Slot localStartDate:", s0.localStartDate);
+      console.log("🔍 Slot startDate:", s0.startDate);
+      console.log("🔍 Slot resources:", JSON.stringify(s0.resources?.[0] || "none"));
+      console.log("🔍 Slot location:", JSON.stringify(s0.location || "none"));
+      console.log("🔍 Slot scheduleId:", s0.scheduleId || s0.resources?.[0]?.scheduleId || "none");
     }
     
     return slots
       .filter(s => s.bookable !== false)
       .slice(0, 5)
       .map(s => {
-        const startDate = s.localStartDate || s.slot?.startDate || s.startDate;
         const resource = s.resources?.[0] || s.resource || null;
+        // Guardar AMBOS formatos: local (para mostrar al usuario) y UTC (para booking)
+        const localStart = s.localStartDate || s.slot?.startDate;
+        const localEnd = s.localEndDate || s.slot?.endDate;
+        const utcStart = s.startDate || null;  // Wix puede devolver esto como UTC
+        const utcEnd = s.endDate || null;
+        
         return {
-          start: startDate,
-          endDate: s.localEndDate || s.slot?.endDate || s.endDate,
+          // Para booking: preferir UTC si existe, sino local
+          start: utcStart || localStart,
+          endDate: utcEnd || localEnd,
+          // Guardar local también para que Claude lo use al mostrar al usuario
+          localStart: localStart,
+          localEnd: localEnd,
           resource: resource,
           scheduleId: resource?.scheduleId || s.scheduleId || null,
           location: s.location || null,
-          label: formatSlotDate(startDate),
+          label: formatSlotDate(localStart),
         };
       });
   } catch (error) {
