@@ -1,6 +1,7 @@
 // ─────────────────────────────────────────────────────────────
 // ASISTENTE R.E.S.T. — Servidor puente Instagram ↔ Claude IA
 // © Joaquín Adi A. — Todos los derechos reservados
+// v2.0 — Refactor: Claude tool use para Wix Bookings
 // ─────────────────────────────────────────────────────────────
 
 const express = require("express");
@@ -24,9 +25,8 @@ const WIX_SERVICES = {
   motion:       process.env.WIX_SERVICE_MOTION,
 };
 
-// ── Memoria de conversaciones y estado de reservas ───────────
-const conversations  = {};
-const bookingState   = {}; // estado del flujo de reserva por usuario
+// ── Memoria de conversaciones ─────────────────────────────────
+const conversations = {};
 
 // ── Headers Wix ───────────────────────────────────────────────
 const wixHeaders = {
@@ -40,7 +40,7 @@ async function getAvailableSlots(serviceId) {
   try {
     const now   = new Date();
     const start = now.toISOString();
-    const end   = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(); // próximos 7 días
+    const end   = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
     const response = await axios.post(
       "https://www.wixapis.com/bookings/v2/query-availability",
@@ -59,20 +59,19 @@ async function getAvailableSlots(serviceId) {
     const slots = response.data?.availabilityEntries || [];
     return slots
       .filter(s => s.bookable && s.openSpots > 0)
-      .slice(0, 5) // máximo 5 horarios
+      .slice(0, 5)
       .map(s => ({
-        id:    s.slot?.startDate,
         start: s.slot?.startDate,
         label: formatSlotDate(s.slot?.startDate),
       }));
   } catch (error) {
     console.error("❌ Error Wix slots:", error.response?.data || error.message);
-    return [];
+    return { error: "No se pudo consultar disponibilidad. Sugiere al paciente agendar en www.sakros.cl" };
   }
 }
 
 // ── Crear reserva en Wix ──────────────────────────────────────
-async function createWixBooking(serviceId, slotStart, name, email) {
+async function createWixBooking(serviceId, slotStart, name, email, phone) {
   try {
     const response = await axios.post(
       "https://www.wixapis.com/bookings/v2/bookings",
@@ -83,6 +82,7 @@ async function createWixBooking(serviceId, slotStart, name, email) {
             firstName: name.split(" ")[0],
             lastName:  name.split(" ").slice(1).join(" ") || ".",
             email:     email,
+            phone:     phone || "",
           },
           slots: [{
             serviceId: serviceId,
@@ -92,10 +92,16 @@ async function createWixBooking(serviceId, slotStart, name, email) {
       },
       { headers: wixHeaders }
     );
-    return response.data?.booking?.id || null;
+    return {
+      success: true,
+      bookingId: response.data?.booking?.id || "confirmado",
+    };
   } catch (error) {
     console.error("❌ Error Wix booking:", error.response?.data || error.message);
-    return null;
+    return {
+      success: false,
+      error: "No se pudo crear la reserva. Sugiere al paciente agendar directamente en www.sakros.cl",
+    };
   }
 }
 
@@ -105,100 +111,156 @@ function formatSlotDate(isoDate) {
   const d = new Date(isoDate);
   const days = ["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
   const months = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
-  const day  = days[d.getDay()];
-  const date = d.getDate();
-  const month = months[d.getMonth()];
-  const hour = d.getHours().toString().padStart(2,"0");
-  const min  = d.getMinutes().toString().padStart(2,"0");
-  return `${day} ${date} de ${month} a las ${hour}:${min}`;
+  return `${days[d.getDay()]} ${d.getDate()} de ${months[d.getMonth()]} a las ${d.getHours().toString().padStart(2,"0")}:${d.getMinutes().toString().padStart(2,"0")}`;
 }
 
-// ── Detectar intención de reserva ─────────────────────────────
-function detectBookingIntent(text) {
-  const t = text.toLowerCase();
-  if (/reserv|agend|cit|hora|turno|quiero ir|quiero asistir|quiero consulta/.test(t)) {
-    if (/kinesio/.test(t))  return "kinesiologia";
-    if (/osteo/.test(t))    return "osteopatia";
-    if (/postur/.test(t))   return "posturologia";
-    if (/motion|balance/.test(t)) return "motion";
-    return "ask"; // preguntar qué servicio
+// ── Tools para Claude ─────────────────────────────────────────
+const CLAUDE_TOOLS = [
+  {
+    name: "consultar_disponibilidad",
+    description: "Consulta los horarios disponibles en Clínica Sakros para los próximos 7 días. Usa esta herramienta cuando el paciente quiera agendar una cita, pida horarios, o acepte tu sugerencia de derivación a un servicio. NO la uses solo para informar sobre servicios — úsala cuando haya intención real de agendar.",
+    input_schema: {
+      type: "object",
+      properties: {
+        servicio: {
+          type: "string",
+          enum: ["kinesiologia", "osteopatia", "posturologia", "motion"],
+          description: "El servicio clínico a consultar: kinesiologia (lesiones musculoesqueléticas, esguinces, tendinopatías), osteopatia (dolor crónico, fibromialgia, columna, bruxismo, problemas digestivos), posturologia (postura, déficit atencional, TEA, problemas visuales funcionales, niños), motion (alteraciones de marcha, dolor de pie, plantillas)",
+        },
+      },
+      required: ["servicio"],
+    },
+  },
+  {
+    name: "crear_reserva",
+    description: "Crea una reserva real en Clínica Sakros vía Wix Bookings. Usa esta herramienta SOLO cuando tengas: 1) el servicio elegido, 2) el horario elegido por el paciente (de los que devolvió consultar_disponibilidad), 3) nombre completo, y 4) email o teléfono del paciente.",
+    input_schema: {
+      type: "object",
+      properties: {
+        servicio: {
+          type: "string",
+          enum: ["kinesiologia", "osteopatia", "posturologia", "motion"],
+          description: "El servicio clínico a reservar",
+        },
+        horario: {
+          type: "string",
+          description: "La fecha/hora ISO del slot elegido por el paciente (copiada exactamente del resultado de consultar_disponibilidad)",
+        },
+        nombre: {
+          type: "string",
+          description: "Nombre completo del paciente",
+        },
+        email: {
+          type: "string",
+          description: "Email del paciente (puede ser vacío si solo dio teléfono)",
+        },
+        telefono: {
+          type: "string",
+          description: "Teléfono del paciente (puede ser vacío si solo dio email)",
+        },
+      },
+      required: ["servicio", "horario", "nombre"],
+    },
+  },
+];
+
+// ── Ejecutar tool calls ───────────────────────────────────────
+async function executeTool(toolName, toolInput) {
+  console.log(`🔧 Tool call: ${toolName}(${JSON.stringify(toolInput)})`);
+
+  if (toolName === "consultar_disponibilidad") {
+    const serviceId = WIX_SERVICES[toolInput.servicio];
+    if (!serviceId) {
+      return JSON.stringify({ error: `Servicio "${toolInput.servicio}" no encontrado` });
+    }
+    const result = await getAvailableSlots(serviceId);
+    console.log(`📅 Slots encontrados: ${Array.isArray(result) ? result.length : "error"}`);
+    return JSON.stringify(result);
   }
-  return null;
+
+  if (toolName === "crear_reserva") {
+    const serviceId = WIX_SERVICES[toolInput.servicio];
+    if (!serviceId) {
+      return JSON.stringify({ error: `Servicio "${toolInput.servicio}" no encontrado` });
+    }
+    const result = await createWixBooking(
+      serviceId,
+      toolInput.horario,
+      toolInput.nombre,
+      toolInput.email || "",
+      toolInput.telefono || ""
+    );
+    console.log(`📋 Reserva: ${result.success ? "✅ " + result.bookingId : "❌ " + result.error}`);
+    return JSON.stringify(result);
+  }
+
+  return JSON.stringify({ error: "Herramienta no reconocida" });
 }
 
-// ── Manejar flujo de reserva ──────────────────────────────────
-async function handleBookingFlow(senderId, text) {
-  const state = bookingState[senderId];
+// ── Llamar a Claude con soporte de tools (loop hasta texto) ──
+async function callClaude(senderId) {
+  const messages = conversations[senderId];
+  let maxToolRounds = 3; // evitar loops infinitos
 
-  // PASO 2: usuario eligió servicio
-  if (state?.step === "select_service") {
-    const t = text.toLowerCase();
-    let service = null;
-    if (/1|kinesio/.test(t))  service = "kinesiologia";
-    if (/2|osteo/.test(t))    service = "osteopatia";
-    if (/3|postur/.test(t))   service = "posturologia";
-    if (/4|motion|balance/.test(t)) service = "motion";
+  while (maxToolRounds > 0) {
+    const response = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model:      "claude-sonnet-4-6",
+        max_tokens: 500,
+        system:     SYSTEM_PROMPT,
+        tools:      CLAUDE_TOOLS,
+        messages:   messages,
+      },
+      {
+        headers: {
+          "x-api-key":         ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "content-type":      "application/json",
+        },
+      }
+    );
 
-    if (!service) {
-      return "Por favor responde con el número del servicio:\n1️⃣ Kinesiología\n2️⃣ Osteopatía\n3️⃣ Posturología Clínica\n4️⃣ Motion and Balance";
+    const content = response.data.content || [];
+    const stopReason = response.data.stop_reason;
+
+    // Si Claude quiere usar una tool
+    if (stopReason === "tool_use") {
+      // Agregar respuesta de Claude (con tool_use blocks) al historial
+      messages.push({ role: "assistant", content });
+
+      // Ejecutar cada tool call y agregar resultados
+      const toolResults = [];
+      for (const block of content) {
+        if (block.type === "tool_use") {
+          const result = await executeTool(block.name, block.input);
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: result,
+          });
+        }
+      }
+      messages.push({ role: "user", content: toolResults });
+
+      maxToolRounds--;
+      continue; // volver a llamar a Claude con los resultados
     }
 
-    const serviceNames = {
-      kinesiologia: "Kinesiología",
-      osteopatia:   "Osteopatía",
-      posturologia: "Posturología Clínica",
-      motion:       "Motion and Balance",
-    };
+    // Claude respondió con texto — extraer y devolver
+    const textBlock = content.find(b => b.type === "text");
+    const reply = textBlock?.text || null;
 
-    const slots = await getAvailableSlots(WIX_SERVICES[service]);
-    if (!slots.length) {
-      delete bookingState[senderId];
-      return `No encontré horarios disponibles para ${serviceNames[service]} en los próximos 7 días. Te recomiendo revisar directamente en www.sakros.cl 🙏`;
+    if (reply) {
+      // Guardar solo el texto en el historial (no los tool blocks)
+      messages.push({ role: "assistant", content: reply });
     }
 
-    bookingState[senderId] = { step: "select_slot", service, slots };
-    const slotList = slots.map((s, i) => `${i+1}️⃣ ${s.label}`).join("\n");
-    return `Horarios disponibles para ${serviceNames[service]}:\n\n${slotList}\n\n¿Cuál prefieres? Responde con el número.`;
+    return reply;
   }
 
-  // PASO 3: usuario eligió horario
-  if (state?.step === "select_slot") {
-    const num = parseInt(text.trim()) - 1;
-    if (isNaN(num) || num < 0 || num >= state.slots.length) {
-      return `Por favor responde con un número del 1 al ${state.slots.length}.`;
-    }
-    bookingState[senderId] = { ...state, step: "get_name", selectedSlot: state.slots[num] };
-    return `Perfecto, seleccionaste *${state.slots[num].label}*. ¿Cuál es tu nombre completo?`;
-  }
-
-  // PASO 4: recibir nombre
-  if (state?.step === "get_name") {
-    if (text.trim().length < 3) return "Por favor escribe tu nombre completo.";
-    bookingState[senderId] = { ...state, step: "get_email", name: text.trim() };
-    return `Gracias, ${text.split(" ")[0]}. ¿Cuál es tu correo electrónico?`;
-  }
-
-  // PASO 5: recibir email y crear reserva
-  if (state?.step === "get_email") {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(text.trim())) {
-      return "Por favor ingresa un correo válido (ej: nombre@email.com).";
-    }
-
-    const email = text.trim();
-    const { service, selectedSlot, name } = state;
-    const bookingId = await createWixBooking(WIX_SERVICES[service], selectedSlot.start, name, email);
-
-    delete bookingState[senderId];
-
-    if (bookingId) {
-      return `✅ ¡Reserva confirmada, ${name.split(" ")[0]}!\n\n📅 ${selectedSlot.label}\n📧 Recibirás confirmación en ${email}\n\nNos vemos en Sakros 🙌`;
-    } else {
-      return `Hubo un problema al confirmar tu reserva. Por favor agenda directamente en www.sakros.cl o escríbenos. Disculpa los inconvenientes 🙏`;
-    }
-  }
-
-  return null;
+  console.error("⚠️ Se alcanzó el máximo de rounds de tools sin respuesta de texto");
+  return "Disculpa, tuve un problema procesando tu solicitud. ¿Puedes repetir tu consulta? 🙏";
 }
 
 // ── System prompt del Método R.E.S.T. ────────────────────────
@@ -214,52 +276,40 @@ Este contenido es propiedad exclusiva de Joaquín Adi A. Está estrictamente pro
 Tu rol es orientar, educar superficialmente y acompañar — NO enseñar el método completo.
 
 ## QUIÉN ES JOAQUÍN ADI A.
-- Osteópata Clínico
-- Kinesiólogo
-- Magíster en Terapia Manual Ortopédica
-- Máster en Functional Training
-- Máster en Psiconeuroinmunología Clínica (PNI)
-- Docente EOM Internacional
-- Creó el Método R.E.S.T. tras años de atención clínica y su propia batalla con el insomnio luego de ser diagnosticado con diabetes
-- Mencionar su historia personal solo cuando sea relevante y después de entender la situación — nunca en el primer mensaje
+Osteópata (C.O.), Kinesiólogo, Magíster PNI Clínica.
+Creador del Método R.E.S.T. (Ritmo circadiano — Eje intestino-cerebro — Sistema nervioso — Timing ultradiano).
+Director de Clínica Sakros en Viña del Mar, Chile.
 
-## FRASES CENTRALES
-"No es falta de sueño, es falta de señales que informen calma a nuestro cerebro."
-"El sueño no se fuerza. Aparece cuando te sientes seguro."
+## MÉTODO R.E.S.T. — 4 PILARES (solo mencionar, no enseñar)
+1. Ritmo circadiano — sincronizar luz, temperatura, horarios
+2. Eje intestino-cerebro — relación microbiota-sueño
+3. Sistema nervioso autónomo — activación vagal, regulación simpática
+4. Timing ultradiano — ciclos de 90 min y eficiencia del sueño
 
-## QUÉ SUCEDE CUANDO NO DUERMES
-- A nivel cerebral: peor juicio, amígdala reactiva, sistema glinfático reducido, menor plasticidad, más sensibilidad al dolor
-- A nivel muscular: menos síntesis proteica (GH/IGF-1), más catabolismo, peor rendimiento neuromuscular, riesgo de fibromialgia
-- En el intestino: cortisol altera microbiota, aumentan bacterias proinflamatorias, disminuyen neurotransmisores de calma
-- Enfermedades asociadas: diabetes, hipertensión, obesidad, depresión, ansiedad, Alzheimer, Parkinson, fibromialgia, enfermedad cardiovascular
+## AGENDAMIENTO DE CITAS EN CLÍNICA SAKROS
+Tienes acceso a dos herramientas para gestionar citas reales en Clínica Sakros (sakros.cl):
+- **consultar_disponibilidad**: consulta horarios reales disponibles para un servicio
+- **crear_reserva**: crea una reserva real con los datos del paciente
 
-## LOS 4 PILARES DEL MÉTODO R.E.S.T.
-R - Ritmo Circadiano + Sleep Drive: sincronizar el reloj biológico con luz matinal, horarios fijos y movimiento físico
-E - Eje Intestino-Cerebro: restaurar microbiota para que el nervio vago envíe señales de calma
-S - Sistema Nervioso: activar el parasimpático con respiración, entorno y señales de seguridad
-T - Timing + Ritmos Ultradianos: respetar ciclos de 90 min durante el día
+### CUÁNDO USAR LAS HERRAMIENTAS
+- Cuando el paciente acepte tu sugerencia de evaluación o diga que quiere atenderse
+- Cuando pregunte por horarios, disponibilidad, o cómo agendar
+- Cuando diga "sí", "dale", "me interesa", "quiero ir", "agéndame" u otra afirmación después de que le sugieras un servicio
+- NO uses la herramienta solo para describir servicios — úsala cuando haya intención real de agendar
 
-## TIPOS DE DOLOR
-1. Nociceptivo: lesiones, esguinces, tendinopatía — dolor útil, no reposo absoluto, usar PEACE & LOVE
-2. Neuropático: ciática, túnel carpiano, hernias — ardor, hormigueo, adormecimiento — requiere evaluación presencial
-3. Nociplástico: fibromialgia, dolor persistente, cefaleas — sistema nervioso hipersensible — se trata regulando el sistema nervioso y el sueño
+### FLUJO DE AGENDAMIENTO
+1. Cuando detectes intención de agendar, usa consultar_disponibilidad con el servicio apropiado
+2. Presenta los horarios disponibles al paciente de forma amigable
+3. Cuando elija un horario, pídele nombre completo y email o teléfono
+4. Con esos datos, usa crear_reserva para confirmar
+5. Si la reserva es exitosa, confirma con entusiasmo
+6. Si falla, sugiere agendar en www.sakros.cl
 
-## PROTOCOLO PEACE & LOVE (lesiones agudas)
-PEACE (primeras 48-72h): Protection (evitar dolor sin reposo absoluto), Elevation (elevar sobre el corazón), Avoid anti-inflammatories (solo si dolor >7-8), Compression (vendaje), Education (entender la lesión)
-LOVE (después): Load (carga progresiva), Optimism (actitud positiva), Vascularisation (cardio sin dolor), Exercise (rehabilitación activa)
-
-## VENTA TEMPORALMENTE DESACTIVADA — MUY IMPORTANTE
-El Método R.E.S.T. NO está disponible para la venta en este momento.
-- NO menciones el precio
-- NO envíes el link de Hotmart
-- NO ofrezcas el ebook ni la plataforma
-- Si alguien pregunta por el método, di: "Estamos preparando el lanzamiento oficial muy pronto — si quieres ser de los primeros en enterarte, escríbeme aquí y te aviso en cuanto esté disponible 🌙"
-- Tu rol ahora es SOLO orientar, educar y derivar a los servicios de Sakros
-
-## RESERVAS EN SAKROS — MUY IMPORTANTE
-Cuando el usuario quiera agendar o reservar una consulta, el sistema de reservas está integrado directamente en este chat.
-NO derives a sakros.cl para reservar — el bot puede agendar directamente.
-Cuando detectes intención de reserva, di: "¡Perfecto! Puedo ayudarte a agendar ahora mismo. ¿Qué servicio necesitas?"
+### IMPORTANTE SOBRE AGENDAMIENTO
+- Si el paciente da sus datos (nombre, teléfono, email) durante la conversación ANTES de que consultes disponibilidad, recuérdalos y úsalos cuando llegue el momento de crear_reserva
+- Si no sabes qué servicio corresponde, pregúntale o sugiere basándote en sus síntomas
+- Si no hay horarios disponibles, sugiere www.sakros.cl
+- NUNCA inventes horarios — usa SOLO los que devuelve consultar_disponibilidad
 
 ## DERIVACIÓN POR SERVICIOS EN SAKROS (sakros.cl)
 
@@ -363,8 +413,7 @@ app.post("/webhook", async (req, res) => {
       // Ignorar mensajes sin contenido
       if (!senderId || !text) continue;
 
-      // Ignorar ecos del propio bot (la nueva API de Instagram a veces no marca is_echo)
-      // Un mensaje entrante real siempre tiene recipient.id === INSTAGRAM_ACCOUNT_ID
+      // Ignorar ecos del propio bot
       if (event.message?.is_echo) continue;
       if (recipientId && recipientId !== INSTAGRAM_ACCOUNT_ID) {
         console.log(`🔄 Ignorando eco (recipient=${recipientId}, sender=${senderId})`);
@@ -377,72 +426,20 @@ app.post("/webhook", async (req, res) => {
         // Inicializar historial
         if (!conversations[senderId]) conversations[senderId] = [];
 
-        // ── Flujo de reserva activo ───────────────────────────
-        if (bookingState[senderId]) {
-          const bookingReply = await handleBookingFlow(senderId, text);
-          if (bookingReply) {
-            await sendInstagramMessage(senderId, bookingReply);
-            continue;
-          }
-        }
-
-        // ── Detectar intención de reserva ─────────────────────
-        const intent = detectBookingIntent(text);
-        if (intent === "ask") {
-          bookingState[senderId] = { step: "select_service" };
-          await sendInstagramMessage(senderId,
-            "¡Con gusto te ayudo a agendar! ¿Qué servicio necesitas?\n\n1️⃣ Kinesiología\n2️⃣ Osteopatía\n3️⃣ Posturología Clínica\n4️⃣ Motion and Balance"
-          );
-          continue;
-        }
-
-        if (intent && intent !== "ask") {
-          const slots = await getAvailableSlots(WIX_SERVICES[intent]);
-          if (slots.length) {
-            bookingState[senderId] = { step: "select_slot", service: intent, slots };
-            const serviceNames = {
-              kinesiologia: "Kinesiología",
-              osteopatia:   "Osteopatía",
-              posturologia: "Posturología Clínica",
-              motion:       "Motion and Balance",
-            };
-            const slotList = slots.map((s, i) => `${i+1}️⃣ ${s.label}`).join("\n");
-            await sendInstagramMessage(senderId,
-              `Horarios disponibles para ${serviceNames[intent]}:\n\n${slotList}\n\n¿Cuál prefieres?`
-            );
-            continue;
-          }
-        }
-
-        // ── Respuesta normal con Claude ───────────────────────
+        // Agregar mensaje del usuario
         conversations[senderId].push({ role: "user", content: text });
 
-        if (conversations[senderId].length > 20) {
-          conversations[senderId] = conversations[senderId].slice(-20);
+        // Limitar historial a 20 mensajes (sin contar tool_result internos)
+        if (conversations[senderId].length > 30) {
+          conversations[senderId] = conversations[senderId].slice(-30);
         }
 
-        const response = await axios.post(
-          "https://api.anthropic.com/v1/messages",
-          {
-            model:      "claude-sonnet-4-6",
-            max_tokens: 500,
-            system:     SYSTEM_PROMPT,
-            messages:   conversations[senderId],
-          },
-          {
-            headers: {
-              "x-api-key":         ANTHROPIC_API_KEY,
-              "anthropic-version": "2023-06-01",
-              "content-type":      "application/json",
-            },
-          }
-        );
+        // Llamar a Claude con tools
+        const reply = await callClaude(senderId);
 
-        const reply = response.data.content?.[0]?.text;
-        if (!reply) continue;
-
-        conversations[senderId].push({ role: "assistant", content: reply });
-        await sendInstagramMessage(senderId, reply);
+        if (reply) {
+          await sendInstagramMessage(senderId, reply);
+        }
 
       } catch (error) {
         console.error("❌ Error:", error.response?.data || error.message);
@@ -453,25 +450,50 @@ app.post("/webhook", async (req, res) => {
 
 // ── Función para enviar mensaje a Instagram ───────────────────
 async function sendInstagramMessage(senderId, text) {
-  await axios.post(
-    `https://graph.instagram.com/v25.0/${INSTAGRAM_ACCOUNT_ID}/messages`,
-    {
-      recipient: { id: senderId },
-      message:   { text },
-    },
-    {
-      headers: { Authorization: `Bearer ${PAGE_ACCESS_TOKEN}` },
+  // Instagram tiene límite de 1000 caracteres por mensaje
+  // Si la respuesta es más larga, enviar en partes
+  const maxLen = 950;
+  const parts = [];
+
+  if (text.length <= maxLen) {
+    parts.push(text);
+  } else {
+    let remaining = text;
+    while (remaining.length > 0) {
+      if (remaining.length <= maxLen) {
+        parts.push(remaining);
+        break;
+      }
+      // Cortar en el último salto de línea o espacio antes del límite
+      let cutAt = remaining.lastIndexOf("\n", maxLen);
+      if (cutAt < maxLen * 0.5) cutAt = remaining.lastIndexOf(" ", maxLen);
+      if (cutAt < maxLen * 0.3) cutAt = maxLen;
+      parts.push(remaining.substring(0, cutAt));
+      remaining = remaining.substring(cutAt).trimStart();
     }
-  );
-  console.log(`✅ Respuesta enviada a ${senderId}`);
+  }
+
+  for (const part of parts) {
+    await axios.post(
+      `https://graph.instagram.com/v25.0/${INSTAGRAM_ACCOUNT_ID}/messages`,
+      {
+        recipient: { id: senderId },
+        message:   { text: part },
+      },
+      {
+        headers: { Authorization: `Bearer ${PAGE_ACCESS_TOKEN}` },
+      }
+    );
+  }
+  console.log(`✅ Respuesta enviada a ${senderId} (${parts.length} parte${parts.length > 1 ? "s" : ""})`);
 }
 
 // ── Health check ──────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.send("🌙 OsteoJuaco activo y funcionando.");
+  res.send("🌙 OsteoJuaco v2.0 — Tool Use activo.");
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+  console.log(`🚀 OsteoJuaco v2.0 corriendo en puerto ${PORT}`);
 });
