@@ -38,66 +38,85 @@ const wixHeaders = {
 // ── Obtener horarios disponibles de Wix ──────────────────────
 async function getAvailableSlots(serviceId) {
   try {
-    const now   = new Date();
-    const start = now.toISOString();
-    const end   = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const now = new Date();
+    // Wix Time Slots V2 usa fechas locales + timezone (no ISO UTC)
+    const fromLocal = now.toISOString().split(".")[0]; // "2026-06-21T23:00:00"
+    const toDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const toLocal = toDate.toISOString().split(".")[0];
 
     const response = await axios.post(
-      "https://www.wixapis.com/bookings/v2/query-availability",
+      "https://www.wixapis.com/_api/service-availability/v2/time-slots",
       {
-        query: {
-          filter: {
-            serviceId: [serviceId],
-            startDate: start,
-            endDate:   end,
-          },
-        },
+        serviceId: serviceId,
+        fromLocalDate: fromLocal,
+        toLocalDate: toLocal,
+        timeZone: "America/Santiago",
+        bookable: true,
       },
       { headers: wixHeaders }
     );
 
-    const slots = response.data?.availabilityEntries || [];
+    console.log("📦 Wix response keys:", Object.keys(response.data || {}));
+
+    const slots = response.data?.timeSlots || response.data?.availabilityEntries || [];
     return slots
-      .filter(s => s.bookable && s.openSpots > 0)
+      .filter(s => s.bookable !== false)
       .slice(0, 5)
-      .map(s => ({
-        start: s.slot?.startDate,
-        label: formatSlotDate(s.slot?.startDate),
-      }));
+      .map(s => {
+        const startDate = s.localStartDate || s.slot?.startDate || s.startDate;
+        return {
+          start: startDate,
+          endDate: s.localEndDate || s.slot?.endDate || s.endDate,
+          resource: s.resources?.[0] || s.resource || null,
+          location: s.location || null,
+          label: formatSlotDate(startDate),
+        };
+      });
   } catch (error) {
-    console.error("❌ Error Wix slots:", error.response?.data || error.message);
+    console.error("❌ Error Wix slots:", error.response?.status, error.response?.data || error.message);
     return { error: "No se pudo consultar disponibilidad. Sugiere al paciente agendar en www.sakros.cl" };
   }
 }
 
 // ── Crear reserva en Wix ──────────────────────────────────────
-async function createWixBooking(serviceId, slotStart, name, email, phone) {
+async function createWixBooking(serviceId, slotStart, name, email, phone, slotEnd, resource, location) {
   try {
-    const response = await axios.post(
-      "https://www.wixapis.com/bookings/v2/bookings",
-      {
-        booking: {
-          selectedPaymentOption: "OFFLINE",
-          contactDetails: {
-            firstName: name.split(" ")[0],
-            lastName:  name.split(" ").slice(1).join(" ") || ".",
-            email:     email,
-            phone:     phone || "",
-          },
-          slots: [{
+    const bookingBody = {
+      booking: {
+        bookedEntity: {
+          slot: {
             serviceId: serviceId,
             startDate: slotStart,
-          }],
+            ...(slotEnd && { endDate: slotEnd }),
+            ...(resource && { resource }),
+            ...(location && { location }),
+          },
         },
+        contactDetails: {
+          firstName: name.split(" ")[0],
+          lastName:  name.split(" ").slice(1).join(" ") || ".",
+          ...(email && { email }),
+          ...(phone && { phone }),
+        },
+        numberOfParticipants: 1,
+        selectedPaymentOption: "OFFLINE",
       },
+    };
+
+    console.log("📤 Wix booking request:", JSON.stringify(bookingBody, null, 2));
+
+    const response = await axios.post(
+      "https://www.wixapis.com/_api/bookings-service/v2/bookings",
+      bookingBody,
       { headers: wixHeaders }
     );
     return {
       success: true,
-      bookingId: response.data?.booking?.id || "confirmado",
+      bookingId: response.data?.booking?.id || response.data?.booking?._id || "confirmado",
+      status: response.data?.booking?.status || "CREATED",
     };
   } catch (error) {
-    console.error("❌ Error Wix booking:", error.response?.data || error.message);
+    console.error("❌ Error Wix booking:", error.response?.status, error.response?.data || error.message);
     return {
       success: false,
       error: "No se pudo crear la reserva. Sugiere al paciente agendar directamente en www.sakros.cl",
@@ -158,6 +177,18 @@ const CLAUDE_TOOLS = [
           type: "string",
           description: "Teléfono del paciente (puede ser vacío si solo dio email)",
         },
+        horario_fin: {
+          type: "string",
+          description: "La fecha/hora ISO de fin del slot (copiada del campo endDate del resultado de consultar_disponibilidad, si está disponible)",
+        },
+        resource: {
+          type: "object",
+          description: "El objeto resource del slot (copiado directamente del resultado de consultar_disponibilidad, si está disponible)",
+        },
+        location: {
+          type: "object",
+          description: "El objeto location del slot (copiado directamente del resultado de consultar_disponibilidad, si está disponible)",
+        },
       },
       required: ["servicio", "horario", "nombre"],
     },
@@ -188,7 +219,10 @@ async function executeTool(toolName, toolInput) {
       toolInput.horario,
       toolInput.nombre,
       toolInput.email || "",
-      toolInput.telefono || ""
+      toolInput.telefono || "",
+      toolInput.horario_fin || null,
+      toolInput.resource || null,
+      toolInput.location || null
     );
     console.log(`📋 Reserva: ${result.success ? "✅ " + result.bookingId : "❌ " + result.error}`);
     return JSON.stringify(result);
