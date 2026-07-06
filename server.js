@@ -89,9 +89,79 @@ async function getAvailableSlots(serviceId) {
   }
 }
 
+// ── Caché de recursos (staff) ─────────────────────────────────
+let resourceCache = null;
+let resourceCacheTime = 0;
+
+async function getResourceByScheduleId(scheduleId) {
+  // Cache de 1 hora — los recursos no cambian seguido
+  if (resourceCache && Date.now() - resourceCacheTime < 3600000) {
+    const cached = resourceCache.find(r => r.scheduleIds?.includes(scheduleId) || r.scheduleId === scheduleId);
+    if (cached) return cached.id || cached._id;
+  }
+
+  // Intentar varios endpoints de Resources API (Wix cambia URLs frecuentemente)
+  const endpoints = [
+    "https://www.wixapis.com/_api/bookings-resources/v2/resources/query",
+    "https://www.wixapis.com/bookings/v2/resources/query",
+  ];
+
+  for (const url of endpoints) {
+    try {
+      const response = await axios.post(url, { query: {} }, { headers: wixHeaders });
+      const resources = response.data?.resources || [];
+      console.log(`📋 Resources encontrados (${url.split("/").pop()}):`, resources.length);
+      
+      if (resources.length > 0) {
+        console.log("🔍 Primer resource:", JSON.stringify(resources[0]));
+        resourceCache = resources;
+        resourceCacheTime = Date.now();
+        
+        const match = resources.find(r => 
+          r.scheduleIds?.includes(scheduleId) || 
+          r.scheduleId === scheduleId ||
+          r.schedules?.some(s => s.id === scheduleId || s.scheduleId === scheduleId)
+        );
+        if (match) {
+          console.log(`✅ Resource match: ${match.id || match._id} para scheduleId ${scheduleId}`);
+          return match.id || match._id;
+        }
+      }
+    } catch (err) {
+      console.log(`⚠️ Resources endpoint ${url.split("wixapis.com")[1]} falló:`, err.response?.status || err.message);
+    }
+  }
+
+  // Fallback: intentar listar staff members
+  try {
+    const response = await axios.post(
+      "https://www.wixapis.com/_api/bookings-staff-members/v1/staff-members/query",
+      { query: {} },
+      { headers: wixHeaders }
+    );
+    const staff = response.data?.staffMembers || [];
+    console.log(`📋 Staff members encontrados:`, staff.length);
+    if (staff.length > 0) {
+      console.log("🔍 Primer staff:", JSON.stringify(staff[0]));
+      // Si solo hay un staff member, es el correcto
+      if (staff.length === 1) return staff[0].id || staff[0]._id;
+    }
+  } catch (err) {
+    console.log("⚠️ Staff members endpoint falló:", err.response?.status || err.message);
+  }
+
+  console.log("❌ No se encontró resource para scheduleId:", scheduleId);
+  return null;
+}
+
 // ── Crear reserva en Wix ──────────────────────────────────────
 async function createWixBooking(serviceId, slotStart, name, email, phone, slotEnd, resource, location, scheduleId) {
-  // Intentar con el endpoint Bookings v2 (formato simple, no requiere resource.id)
+  // Obtener resource.id a partir del scheduleId
+  let resourceId = resource?.id || resource;
+  if (!resourceId && scheduleId) {
+    resourceId = await getResourceByScheduleId(scheduleId);
+  }
+
   try {
     const bookingBody = {
       booking: {
@@ -100,6 +170,7 @@ async function createWixBooking(serviceId, slotStart, name, email, phone, slotEn
             serviceId: serviceId,
             startDate: slotStart,
             ...(slotEnd && { endDate: slotEnd }),
+            ...(resourceId && { resource: { id: resourceId } }),
             ...(scheduleId && { scheduleId }),
             timezone: "America/Santiago",
             location: {
