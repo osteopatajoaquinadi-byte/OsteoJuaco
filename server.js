@@ -247,7 +247,7 @@ async function confirmWixBooking(bookingId, revision) {
       url: `https://www.wixapis.com/_api/bookings-service/v2/bookings/${bookingId}/confirm`,
       body: {
         ...(revision && { revision: String(revision) }),
-        participantNotification: { notifyParticipants: false },
+        participantNotification: { notifyParticipants: true },
       },
     },
     {
