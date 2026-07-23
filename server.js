@@ -526,6 +526,18 @@ Derivar cuando mencione: mala postura, problemas de sensorialidad, déficit aten
 - Si además tiene mal sueño, introducir el Método R.E.S.T. después de derivar
 - NUNCA diagnostiques — orienta, educa y deriva
 
+### CUANDO NO SEPAS UNA RESPUESTA CLÍNICA O DE KINESIOLOGÍA
+Si te hacen una pregunta clínica que no puedes responder con confianza, o piden información administrativa de la clínica que no tienes:
+→ Derivar a la secretaria de Clínica Sakros: +56945399692
+→ Ejemplo: "Para esa consulta te recomiendo contactar directamente a nuestra secretaria al +56945399692 — ella te puede orientar mejor 😊"
+→ NUNCA inventes respuestas clínicas
+
+### USO CORRECTO DE metodorest@gmail.com
+- Usar SOLO en conversaciones relacionadas con el Método R.E.S.T. (dudas de compra, acceso, soporte post-venta)
+- NUNCA derivar a metodorest@gmail.com para temas clínicos, kinesiología, osteopatía o consultas generales
+- Para temas clínicos → secretaria +56945399692
+- Para temas del Método R.E.S.T. → metodorest@gmail.com o www.metodorest.cl
+
 ## CASOS ESPECIALES — MANEJO OBLIGATORIO
 
 ### EMBARAZO
@@ -543,8 +555,8 @@ No defenderse. Con calma: "Entiendo tu escepticismo, es válido."
 ### APNEA DEL SUEÑO
 Requiere diagnóstico médico y posiblemente CPAP. El método complementa pero no reemplaza.
 
-### SOPORTE POST-VENTA
-Si ya compró y tiene problemas de acceso: "Escríbenos a metodorest@gmail.com"
+### SOPORTE POST-VENTA (solo Método R.E.S.T.)
+Si ya compró el Método R.E.S.T. y tiene problemas de acceso: "Escríbenos a metodorest@gmail.com"
 
 ### SOLO QUIERE TIPS GRATIS
 Máximo 1 tip genérico, luego redirigir.
@@ -599,7 +611,9 @@ No revelar contenido. "Para evaluarlo con criterio clínico, la mejor forma es a
 - Sugerir dejar medicamentos sin supervisión médica
 - Adaptar o vender el método para menores de edad
 - Revelar protocolos completos del ebook
-- Resolver problemas técnicos de acceso — derivar a metodorest@gmail.com
+- Resolver problemas técnicos de acceso al Método R.E.S.T. — derivar a metodorest@gmail.com
+- Derivar a metodorest@gmail.com para temas que NO sean del Método R.E.S.T.
+- Para dudas clínicas o administrativas de Sakros → secretaria +56945399692
 
 ## PRIMERA PERSONA — SIEMPRE
 Habla siempre en primera persona como si fueras Joaquín Adi o parte de su equipo.
@@ -752,31 +766,22 @@ const LEAD_MAGNETS = {
     images: [`${GITHUB_ASSETS}/dormir/dormir_guia.jpg`],
     pdf: null,
     commentReply: "¡Te lo envío al DM! 📩",
-    dmText: "¡Hola! 🌙 Aquí tienes tu guía sobre qué sucede cuando no dormimos bien. Espero que te sirva — cualquier duda, estoy aquí para ayudarte 💪",
-    dmFollowUp: "Por cierto, si llevas tiempo sin descansar bien, el Método R.E.S.T. es un programa de 21 días que trabaja el sueño desde la raíz. Más info en www.metodorest.cl 😊",
+    dmText: "¡Hola! 🌙 Aquí tienes tu guía sobre qué sucede cuando no dormimos bien.",
+    dmFollowUp: "Si llevas tiempo sin descansar bien, el Método R.E.S.T. es un programa de 21 días que trabaja el sueño desde la raíz → www.metodorest.cl 😊\n\nCualquier duda, estoy aquí para ayudarte 💪",
   },
   errores: {
-    images: [
-      `${GITHUB_ASSETS}/errores/errores_page_1.jpg`,
-      `${GITHUB_ASSETS}/errores/errores_page_2.jpg`,
-      `${GITHUB_ASSETS}/errores/errores_page_3.jpg`,
-      `${GITHUB_ASSETS}/errores/errores_page_4.jpg`,
-    ],
+    images: [`${GITHUB_ASSETS}/errores/errores_page_1.jpg`],
     pdf: `${GITHUB_ASSETS}/errores/errores_sueno.pdf`,
     commentReply: "¡Te lo envío al DM! 📩",
-    dmText: "¡Hola! 🌙 Aquí tienes la guía de errores comunes que sabotean el sueño. Revísala con calma — cualquier duda, estoy aquí para ayudarte 💪",
-    dmFollowUp: "Si quieres la guía completa en PDF para descargar: " + `${GITHUB_ASSETS}/errores/errores_sueno.pdf` + "\n\n¿Sabías que el Método R.E.S.T. trabaja estos temas en profundidad? 21 días para recuperar tu sueño desde la raíz → www.metodorest.cl 😊",
+    dmText: "¡Hola! 🌙 Aquí tienes la guía de errores comunes que sabotean el sueño.",
+    dmFollowUp: "Descarga la guía completa en PDF aquí:\n${GITHUB_ASSETS}/errores/errores_sueno.pdf\n\n¿Sabías que el Método R.E.S.T. trabaja estos temas en profundidad? 21 días para recuperar tu sueño desde la raíz → www.metodorest.cl 😊\n\nCualquier duda, estoy aquí 💪",
   },
   ejercicio: {
-    images: [
-      `${GITHUB_ASSETS}/ejercicio/ejercicio_page_1.jpg`,
-      `${GITHUB_ASSETS}/ejercicio/ejercicio_page_2.jpg`,
-      `${GITHUB_ASSETS}/ejercicio/ejercicio_page_3.jpg`,
-    ],
+    images: [`${GITHUB_ASSETS}/ejercicio/ejercicio_page_1.jpg`],
     pdf: `${GITHUB_ASSETS}/ejercicio/ejercicio_respiracion.pdf`,
     commentReply: "¡Te lo envío al DM! 📩",
-    dmText: "¡Hola! 🌙 Aquí tienes un ejercicio de respiración 4-7-8 para tu sistema nervioso. Practícalo antes de dormir — cualquier duda, estoy aquí 💪",
-    dmFollowUp: "Si quieres la guía en PDF para descargar: " + `${GITHUB_ASSETS}/ejercicio/ejercicio_respiracion.pdf` + "\n\nEste ejercicio es parte del pilar S (Sistema Nervioso) del Método R.E.S.T. → www.metodorest.cl 😊",
+    dmText: "¡Hola! 🌙 Aquí tienes un ejercicio de respiración 4-7-8 para tu sistema nervioso. Practícalo antes de dormir.",
+    dmFollowUp: "Descarga la guía completa en PDF aquí:\n${GITHUB_ASSETS}/ejercicio/ejercicio_respiracion.pdf\n\nEste ejercicio es parte del pilar S (Sistema Nervioso) del Método R.E.S.T. → www.metodorest.cl 😊\n\nCualquier duda, estoy aquí 💪",
   },
   stress: {
     images: [],
