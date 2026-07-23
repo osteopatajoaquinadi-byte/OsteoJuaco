@@ -102,8 +102,8 @@ async function getAvailableSlots(serviceId, serviceKey) {
 // El endpoint Get sí trae el slot completo con resource, que es obligatorio para reservar.
 async function enrichSlot(serviceId, rawSlot, timeZone) {
   const candidates = [
-    "https://www.wixapis.com/_api/service-availability/v2/time-slot",
     "https://www.wixapis.com/_api/service-availability/v2/time-slots/get",
+    "https://www.wixapis.com/_api/service-availability/v2/time-slot",
     "https://www.wixapis.com/bookings/v2/availability/time-slots/get",
   ];
 
@@ -121,7 +121,11 @@ async function enrichSlot(serviceId, rawSlot, timeZone) {
       );
       const full = resp.data?.timeSlot || resp.data?.availabilityEntry || resp.data?.slot;
       if (full) {
-        console.log(`🔎 Slot enriquecido vía ${url.split("wixapis.com")[1]} — recursos: ${(full.availableResources || []).length}`);
+        const res = full.availableResources || [];
+        console.log(`🔎 Slot enriquecido — recursos: ${res.length}`);
+        if (res.length > 0) {
+          console.log("🔍 availableResources[0]:", JSON.stringify(res[0]).slice(0, 600));
+        }
         return full;
       }
     } catch (err) {
@@ -198,6 +202,42 @@ async function getResourceByScheduleId(scheduleId) {
 }
 
 // ── Crear reserva en Wix ──────────────────────────────────────
+// ── Extraer el ID de recurso (staff) de la estructura de Wix ──
+// Wix cambia la forma de availableResources entre versiones, así que probamos
+// varias rutas y validamos que sea un GUID real antes de enviarlo.
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function extractResourceId(entry) {
+  if (!entry) return null;
+  if (typeof entry === "string") return GUID_RE.test(entry) ? entry : null;
+
+  const candidates = [
+    entry.id,
+    entry._id,
+    entry.resourceId,
+    entry.resourceIds?.[0],
+    entry.resources?.[0]?.id,
+    entry.resources?.[0]?._id,
+    entry.resource?.id,
+    entry.resource?._id,
+  ];
+
+  for (const c of candidates) {
+    if (typeof c === "string" && GUID_RE.test(c)) return c;
+  }
+
+  // Último recurso: buscar recursivamente el primer GUID que no sea un resourceType
+  for (const [key, value] of Object.entries(entry)) {
+    if (/type/i.test(key)) continue;
+    if (typeof value === "string" && GUID_RE.test(value)) return value;
+    if (value && typeof value === "object") {
+      const nested = extractResourceId(value);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
 async function createWixBooking(slotId, name, email, phone) {
   const entry = slotCache[slotId];
   if (!entry) {
@@ -228,12 +268,19 @@ async function createWixBooking(slotId, name, email, phone) {
     : { locationType: "OWNER_BUSINESS" };
 
   // Recurso: preferir el del slot enriquecido; si no, resolverlo por scheduleId
-  let resource = full.availableResources?.[0] || rawSlot.availableResources?.[0] || null;
   const scheduleId = full.scheduleId || rawSlot.scheduleId || null;
+  let resourceId = extractResourceId(full.availableResources?.[0])
+    || extractResourceId(rawSlot.availableResources?.[0]);
 
-  if (!resource && scheduleId) {
-    const resolvedId = await getResourceByScheduleId(scheduleId);
-    if (resolvedId) resource = { _id: resolvedId, id: resolvedId };
+  if (!resourceId && scheduleId) {
+    const resolved = await getResourceByScheduleId(scheduleId);
+    if (resolved && GUID_RE.test(resolved)) resourceId = resolved;
+  }
+
+  if (resourceId) {
+    console.log(`👤 Recurso resuelto: ${resourceId}`);
+  } else {
+    console.log("⚠️ Sin recurso válido — se omite (skipAvailabilityValidation debería cubrirlo)");
   }
 
   const slot = {
@@ -243,14 +290,7 @@ async function createWixBooking(slotId, name, email, phone) {
     timezone: timeZone,
     location,
     ...(scheduleId && { scheduleId }),
-    ...(resource && {
-      resource: {
-        ...(resource._id && { _id: resource._id }),
-        ...(resource.id && { id: resource.id }),
-        ...(resource.scheduleId && { scheduleId: resource.scheduleId }),
-        ...(resource.name && { name: resource.name }),
-      },
-    }),
+    ...(resourceId && { resource: { id: resourceId } }),
   };
 
   const bookingBody = {
