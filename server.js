@@ -414,6 +414,10 @@ async function createWixBooking(slotId, name, email, phone) {
         skipBusinessConfirmation: true,
         skipSelectedPaymentOptionValidation: true,
       },
+      // La automatización "Se reserva una sesión" de Wix está condicionada a que
+      // esta bandera sea verdadera. El disparador es la CREACIÓN de la reserva,
+      // por eso no basta con activarla al confirmar.
+      participantNotification: { notifyParticipants: true },
     },
   };
 
