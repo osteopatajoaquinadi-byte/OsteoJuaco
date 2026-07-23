@@ -238,6 +238,43 @@ function extractResourceId(entry) {
   return null;
 }
 
+// ── Confirmar una reserva en Wix ──────────────────────────────
+// Una reserva en estado CREATED existe pero NO aparece en el calendario ni
+// bloquea el horario. Hay que confirmarla explícitamente.
+async function confirmWixBooking(bookingId, revision) {
+  const attempts = [
+    {
+      url: `https://www.wixapis.com/_api/bookings-service/v2/bookings/${bookingId}/confirm`,
+      body: {
+        ...(revision && { revision: String(revision) }),
+        participantNotification: { notifyParticipants: false },
+      },
+    },
+    {
+      url: `https://www.wixapis.com/bookings/v2/confirmation/${bookingId}:confirmOrDecline`,
+      body: {
+        ...(revision && { revision: String(revision) }),
+        paymentStatus: "NOT_PAID",
+      },
+    },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const resp = await axios.post(attempt.url, attempt.body, { headers: wixHeaders });
+      const status = resp.data?.booking?.status || "CONFIRMED";
+      console.log(`✅ Reserva confirmada — estado: ${status}`);
+      return status;
+    } catch (err) {
+      const detail = err.response?.data?.message
+        || err.response?.data?.details?.applicationError?.description
+        || err.message;
+      console.log(`⚠️ Confirm ${attempt.url.split("wixapis.com")[1].split("/").pop()}: ${err.response?.status} ${String(detail).slice(0, 200)}`);
+    }
+  }
+  return null;
+}
+
 async function createWixBooking(slotId, name, email, phone) {
   const entry = slotCache[slotId];
   if (!entry) {
@@ -324,10 +361,26 @@ async function createWixBooking(slotId, name, email, phone) {
     );
 
     const booking = response.data?.booking || {};
-    const bookingId = booking.id || booking._id || "confirmado";
-    const status = booking.status || "CREATED";
+    const bookingId = booking.id || booking._id || null;
+    let status = booking.status || "CREATED";
     console.log(`📋 Reserva creada: ${bookingId} (${status})`);
-    return { success: true, bookingId, status };
+
+    // CREATED no aparece en el calendario — hay que confirmarla
+    if (status !== "CONFIRMED" && bookingId) {
+      const confirmed = await confirmWixBooking(bookingId, booking.revision);
+      if (confirmed) status = confirmed;
+    }
+
+    if (status === "CONFIRMED") {
+      return { success: true, bookingId, status };
+    }
+
+    return {
+      success: true,
+      bookingId,
+      status,
+      nota: "La reserva quedó registrada pero PENDIENTE de confirmación por la clínica. Dile al paciente que su solicitud quedó tomada y que la clínica le confirmará el horario a la brevedad. NO le digas que está confirmada.",
+    };
   } catch (error) {
     const status = error.response?.status;
     const data = error.response?.data;
@@ -562,7 +615,8 @@ Tienes acceso a dos herramientas para gestionar citas reales en Clínica Sakros 
 4. Cuando el paciente elija uno, pídele nombre completo y email o teléfono
 5. Llama a crear_reserva pasando el slot_id EXACTO del horario que eligió
 6. Si la reserva es exitosa, confirma con entusiasmo mencionando día y hora
-7. Si falla, discúlpate brevemente y sigue la instrucción del mensaje de error
+7. Si el resultado trae una "nota", síguela al pie de la letra: NUNCA le digas al paciente que su hora está confirmada si el sistema no la confirmó
+8. Si falla, discúlpate brevemente y sigue la instrucción del mensaje de error
 
 ### REGLAS INQUEBRANTABLES DE AGENDAMIENTO
 - NUNCA inventes ni deduzcas un horario. Solo existen los que devolvió consultar_disponibilidad en ESTA conversación.
