@@ -238,6 +238,61 @@ function extractResourceId(entry) {
   return null;
 }
 
+// ── Buscar o crear el Contacto en el CRM de Wix ───────────────
+// Las automatizaciones de email de Wix Bookings envían al "contacto que disparó
+// la automatización". Una reserva por API sin contactId vinculado no tiene
+// destinatario, por eso no sale el correo de confirmación.
+async function findOrCreateWixContact(name, email, phone) {
+  if (!email && !phone) return null;
+
+  const first = name.split(" ")[0];
+  const last = name.split(" ").slice(1).join(" ") || ".";
+
+  // 1) Buscar contacto existente por email
+  if (email) {
+    try {
+      const resp = await axios.post(
+        "https://www.wixapis.com/contacts/v4/contacts/query",
+        { query: { filter: { "info.emails.email": email } } },
+        { headers: wixHeaders }
+      );
+      const found = resp.data?.contacts?.[0];
+      const id = found?.id || found?._id;
+      if (id) {
+        console.log(`👥 Contacto existente: ${id}`);
+        return id;
+      }
+    } catch (err) {
+      console.log(`⚠️ Query contacto: ${err.response?.status || err.message}`);
+    }
+  }
+
+  // 2) Crear contacto nuevo
+  try {
+    const resp = await axios.post(
+      "https://www.wixapis.com/contacts/v4/contacts",
+      {
+        info: {
+          name: { first, last },
+          ...(email && { emails: { items: [{ email, primary: true }] } }),
+          ...(phone && { phones: { items: [{ phone, primary: true }] } }),
+        },
+      },
+      { headers: wixHeaders }
+    );
+    const id = resp.data?.contact?.id || resp.data?.contact?._id;
+    if (id) {
+      console.log(`👥 Contacto creado: ${id}`);
+      return id;
+    }
+  } catch (err) {
+    const detail = err.response?.data?.message || err.message;
+    console.log(`⚠️ Crear contacto: ${err.response?.status} ${String(detail).slice(0, 200)}`);
+  }
+
+  return null;
+}
+
 // ── Confirmar una reserva en Wix ──────────────────────────────
 // Una reserva en estado CREATED existe pero NO aparece en el calendario ni
 // bloquea el horario. Hay que confirmarla explícitamente.
@@ -330,10 +385,14 @@ async function createWixBooking(slotId, name, email, phone) {
     ...(resourceId && { resource: { id: resourceId } }),
   };
 
+  // Vincular un Contacto del CRM para que Wix pueda enviar el correo al paciente
+  const contactId = await findOrCreateWixContact(name, email, phone);
+
   const bookingBody = {
     booking: {
       bookedEntity: { slot },
       contactDetails: {
+        ...(contactId && { contactId }),
         firstName: name.split(" ")[0],
         lastName: name.split(" ").slice(1).join(" ") || ".",
         ...(email && { email }),
