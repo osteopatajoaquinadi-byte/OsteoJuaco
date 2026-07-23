@@ -18,6 +18,13 @@ const INSTAGRAM_ACCOUNT_ID = process.env.INSTAGRAM_ACCOUNT_ID;
 // ── Variables Wix ─────────────────────────────────────────────
 const WIX_API_KEY  = process.env.WIX_API_KEY;
 const WIX_SITE_ID  = process.env.WIX_SITE_ID;
+const SERVICE_LABELS = {
+  kinesiologia: "Kinesiología",
+  osteopatia:   "Osteopatía",
+  posturologia: "Posturología Clínica",
+  motion:       "Motion and Balance",
+};
+
 const WIX_SERVICES = {
   kinesiologia: process.env.WIX_SERVICE_KINESIOLOGIA,
   osteopatia:   process.env.WIX_SERVICE_OSTEOPATIA,
@@ -430,14 +437,22 @@ async function createWixBooking(slotId, name, email, phone) {
       if (confirmed) status = confirmed;
     }
 
+    const detalle = {
+      servicio: SERVICE_LABELS[serviceKey] || serviceKey,
+      fecha: formatSlotDate(slot.startDate),
+      direccion: location.formattedAddress || "Clínica Sakros, Viña del Mar",
+      paciente: name,
+    };
+
     if (status === "CONFIRMED") {
-      return { success: true, bookingId, status };
+      return { success: true, bookingId, status, detalle };
     }
 
     return {
       success: true,
       bookingId,
       status,
+      detalle,
       nota: "La reserva quedó registrada pero PENDIENTE de confirmación por la clínica. Dile al paciente que su solicitud quedó tomada y que la clínica le confirmará el horario a la brevedad. NO le digas que está confirmada.",
     };
   } catch (error) {
@@ -516,7 +531,7 @@ const CLAUDE_TOOLS = [
 ];
 
 // ── Ejecutar tool calls ───────────────────────────────────────
-async function executeTool(toolName, toolInput) {
+async function executeTool(toolName, toolInput, senderId) {
   console.log(`🔧 Tool call: ${toolName}(${JSON.stringify(toolInput)})`);
 
   if (toolName === "consultar_disponibilidad") {
@@ -545,6 +560,38 @@ async function executeTool(toolName, toolInput) {
       toolInput.email || "",
       toolInput.telefono || ""
     );
+
+    // Comprobante propio por DM: no dependemos del correo de Wix
+    if (result.success && result.detalle && senderId) {
+      const d = result.detalle;
+      const confirmada = result.status === "CONFIRMED";
+      const encabezado = confirmada
+        ? "✅ *Tu hora quedó agendada en Clínica Sakros*"
+        : "📩 *Recibimos tu solicitud de hora en Clínica Sakros*";
+      const cierre = confirmada
+        ? "Si necesitas reagendar o cancelar, escríbeme por aquí o llama a la secretaria al *+56945399692*."
+        : "Te confirmaremos el horario a la brevedad. Ante cualquier duda, llama a la secretaria al *+56945399692*.";
+
+      const comprobante = [
+        encabezado,
+        "",
+        `🩺 *Servicio:* ${d.servicio}`,
+        `📅 *Fecha:* ${d.fecha}`,
+        `📍 *Dirección:* ${d.direccion}`,
+        `👤 *A nombre de:* ${d.paciente}`,
+        "",
+        cierre,
+      ].join("\n");
+
+      try {
+        await sendInstagramMessage(senderId, comprobante);
+        result.comprobante_enviado = true;
+        result.nota_bot = "Ya se le envió al paciente un comprobante con todos los datos. Tu respuesta debe ser breve y cálida, SIN repetir los datos de la reserva.";
+      } catch (err) {
+        console.error("⚠️ No se pudo enviar el comprobante:", err.message);
+      }
+    }
+
     return JSON.stringify(result);
   }
 
@@ -587,7 +634,7 @@ async function callClaude(senderId) {
       const toolResults = [];
       for (const block of content) {
         if (block.type === "tool_use") {
-          const result = await executeTool(block.name, block.input);
+          const result = await executeTool(block.name, block.input, senderId);
           toolResults.push({
             type: "tool_result",
             tool_use_id: block.id,
