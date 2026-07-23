@@ -36,12 +36,33 @@ const wixHeaders = {
 };
 
 // ── Obtener horarios disponibles de Wix ──────────────────────
-async function getAvailableSlots(serviceId) {
+// Caché de slots CRUDOS. Clave: slot_id que ve Claude. Valor: objeto slot tal cual
+// lo devolvió Wix + la zona horaria de la respuesta. Esto evita que Claude reconstruya
+// fechas a mano (causa histórica de SLOT_NOT_AVAILABLE).
+const slotCache = {};
+
+function cacheSlot(serviceKey, index, rawSlot, timeZone) {
+  const id = `${serviceKey}_${index}`;
+  slotCache[id] = { rawSlot, timeZone, serviceKey, cachedAt: Date.now() };
+  return id;
+}
+
+// Limpia slots cacheados de más de 2 horas
+function purgeSlotCache() {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, entry] of Object.entries(slotCache)) {
+    if (entry.cachedAt < cutoff) delete slotCache[id];
+  }
+}
+
+async function getAvailableSlots(serviceId, serviceKey) {
   try {
+    purgeSlotCache();
+
     const now = new Date();
-    // Wix Time Slots V2 usa fechas locales + timezone (no ISO UTC)
-    const fromLocal = now.toISOString().split(".")[0]; // "2026-06-21T23:00:00"
-    const toDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    // Wix Time Slots V2 usa fechas locales + timeZone (no ISO UTC)
+    const fromLocal = now.toISOString().split(".")[0];
+    const toDate = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
     const toLocal = toDate.toISOString().split(".")[0];
 
     const response = await axios.post(
@@ -56,37 +77,59 @@ async function getAvailableSlots(serviceId) {
       { headers: wixHeaders }
     );
 
-    console.log("📦 Wix response keys:", Object.keys(response.data || {}));
+    const timeZone = response.data?.timeZone || "America/Santiago";
+    const slots = (response.data?.timeSlots || response.data?.availabilityEntries || [])
+      .filter(s => s.bookable !== false);
 
-    const slots = response.data?.timeSlots || response.data?.availabilityEntries || [];
-    
-    // Log primer slot COMPLETO para debug
-    if (slots.length > 0) {
-      console.log("🔍 SLOT COMPLETO:", JSON.stringify(slots[0]));
-    }
-    
-    return slots
-      .filter(s => s.bookable !== false)
-      .slice(0, 5)
-      .map(s => {
-        // El campo correcto es availableResources (no resources)
-        const resource = s.availableResources?.[0] || null;
-        const localStart = s.localStartDate;
-        const localEnd = s.localEndDate;
-        
-        return {
-          start: localStart,
-          endDate: localEnd,
-          resource: resource,
-          scheduleId: s.scheduleId || null,  // está en el nivel del slot, no del resource
-          location: s.location || null,
-          label: formatSlotDate(localStart),
-        };
-      });
+    console.log(`📅 Slots crudos recibidos: ${slots.length} (tz=${timeZone})`);
+
+    const shown = slots.slice(0, 6);
+    return shown.map((raw, i) => {
+      const id = cacheSlot(serviceKey, i, raw, timeZone);
+      return {
+        slot_id: id,
+        horario: formatSlotDate(raw.localStartDate),
+      };
+    });
   } catch (error) {
     console.error("❌ Error Wix slots:", error.response?.status, error.response?.data || error.message);
     return { error: "No se pudo consultar disponibilidad. Sugiere al paciente agendar en www.sakros.cl" };
   }
+}
+
+// ── Revalidar/enriquecer un slot con Get Availability Time Slot ───
+// La lista (List Availability Time Slots) NO devuelve availableResources poblado.
+// El endpoint Get sí trae el slot completo con resource, que es obligatorio para reservar.
+async function enrichSlot(serviceId, rawSlot, timeZone) {
+  const candidates = [
+    "https://www.wixapis.com/_api/service-availability/v2/time-slot",
+    "https://www.wixapis.com/_api/service-availability/v2/time-slots/get",
+    "https://www.wixapis.com/bookings/v2/availability/time-slots/get",
+  ];
+
+  for (const url of candidates) {
+    try {
+      const resp = await axios.post(
+        url,
+        {
+          serviceId: serviceId,
+          localStartDate: rawSlot.localStartDate,
+          localEndDate: rawSlot.localEndDate,
+          timeZone: timeZone,
+        },
+        { headers: wixHeaders }
+      );
+      const full = resp.data?.timeSlot || resp.data?.availabilityEntry || resp.data?.slot;
+      if (full) {
+        console.log(`🔎 Slot enriquecido vía ${url.split("wixapis.com")[1]} — recursos: ${(full.availableResources || []).length}`);
+        return full;
+      }
+    } catch (err) {
+      console.log(`⚠️ Get slot ${url.split("wixapis.com")[1]}: ${err.response?.status || err.message}`);
+    }
+  }
+  console.log("ℹ️ No se pudo enriquecer el slot, se usa el de la lista");
+  return rawSlot;
 }
 
 // ── Caché de recursos (staff) ─────────────────────────────────
@@ -155,121 +198,114 @@ async function getResourceByScheduleId(scheduleId) {
 }
 
 // ── Crear reserva en Wix ──────────────────────────────────────
-async function createWixBooking(serviceId, slotStart, name, email, phone, slotEnd, resource, location, scheduleId) {
-  // Obtener resource.id a partir del scheduleId
-  let resourceId = resource?.id || resource;
-  if (!resourceId && scheduleId) {
-    resourceId = await getResourceByScheduleId(scheduleId);
+async function createWixBooking(slotId, name, email, phone) {
+  const entry = slotCache[slotId];
+  if (!entry) {
+    console.error(`❌ slot_id desconocido o expirado: ${slotId}`);
+    return {
+      success: false,
+      error: "Ese horario ya no está en memoria. Vuelve a consultar disponibilidad y pide al paciente que elija de nuevo.",
+    };
   }
 
+  const { rawSlot, timeZone, serviceKey } = entry;
+  const serviceId = WIX_SERVICES[serviceKey];
+
+  // Revalidar el slot y traer el recurso (staff), que la lista no devuelve poblado
+  const full = await enrichSlot(serviceId, rawSlot, timeZone);
+
+  // Wix devuelve locationType "BUSINESS" en disponibilidad pero exige "OWNER_BUSINESS" al reservar
+  const LOCATION_TYPE_MAP = {
+    BUSINESS: "OWNER_BUSINESS",
+    OWNER_BUSINESS: "OWNER_BUSINESS",
+    CUSTOM: "CUSTOM",
+    OWNER_CUSTOM: "OWNER_CUSTOM",
+  };
+
+  const rawLocation = full.location || rawSlot.location || null;
+  const location = rawLocation
+    ? { ...rawLocation, locationType: LOCATION_TYPE_MAP[rawLocation.locationType] || "OWNER_BUSINESS" }
+    : { locationType: "OWNER_BUSINESS" };
+
+  // Recurso: preferir el del slot enriquecido; si no, resolverlo por scheduleId
+  let resource = full.availableResources?.[0] || rawSlot.availableResources?.[0] || null;
+  const scheduleId = full.scheduleId || rawSlot.scheduleId || null;
+
+  if (!resource && scheduleId) {
+    const resolvedId = await getResourceByScheduleId(scheduleId);
+    if (resolvedId) resource = { _id: resolvedId, id: resolvedId };
+  }
+
+  const slot = {
+    serviceId,
+    startDate: full.localStartDate || rawSlot.localStartDate,
+    endDate: full.localEndDate || rawSlot.localEndDate,
+    timezone: timeZone,
+    location,
+    ...(scheduleId && { scheduleId }),
+    ...(resource && {
+      resource: {
+        ...(resource._id && { _id: resource._id }),
+        ...(resource.id && { id: resource.id }),
+        ...(resource.scheduleId && { scheduleId: resource.scheduleId }),
+        ...(resource.name && { name: resource.name }),
+      },
+    }),
+  };
+
+  const bookingBody = {
+    booking: {
+      bookedEntity: { slot },
+      contactDetails: {
+        firstName: name.split(" ")[0],
+        lastName: name.split(" ").slice(1).join(" ") || ".",
+        ...(email && { email }),
+        ...(phone && { phone }),
+      },
+      numberOfParticipants: 1,
+      selectedPaymentOption: "OFFLINE",
+    },
+    options: {
+      flowControlSettings: {
+        skipAvailabilityValidation: true,
+        skipBusinessConfirmation: true,
+        skipSelectedPaymentOptionValidation: true,
+      },
+    },
+  };
+
+  console.log("📤 Wix booking request:", JSON.stringify(bookingBody));
+
   try {
-    const bookingBody = {
-      booking: {
-        bookedEntity: {
-          slot: {
-            serviceId: serviceId,
-            startDate: slotStart,
-            ...(slotEnd && { endDate: slotEnd }),
-            ...(resourceId && { resource: { id: resourceId } }),
-            ...(scheduleId && { scheduleId }),
-            timezone: "America/Santiago",
-            location: {
-              locationType: "OWNER_BUSINESS",
-            },
-          },
-        },
-        contactDetails: {
-          firstName: name.split(" ")[0],
-          lastName:  name.split(" ").slice(1).join(" ") || ".",
-          ...(email && { email }),
-          ...(phone && { phone }),
-        },
-        numberOfParticipants: 1,
-        selectedPaymentOption: "OFFLINE",
-      },
-      options: {
-        flowControlSettings: {
-          skipAvailabilityValidation: true,
-        },
-      },
-    };
-
-    console.log("📤 Wix booking request (Writer V2):", JSON.stringify(bookingBody, null, 2));
-
     const response = await axios.post(
       "https://www.wixapis.com/_api/bookings-service/v2/bookings",
       bookingBody,
       { headers: wixHeaders }
     );
-    
-    const bookingId = response.data?.booking?.id || response.data?.booking?._id || "confirmado";
-    const status = response.data?.booking?.status || "CREATED";
-    
-    // Si la reserva quedó en CREATED, intentar confirmarla automáticamente
-    if (status === "CREATED" && bookingId && bookingId !== "confirmado") {
-      try {
-        await axios.post(
-          `https://www.wixapis.com/_api/bookings-service/v2/bookings/${bookingId}/confirm`,
-          { revision: response.data?.booking?.revision || "1" },
-          { headers: wixHeaders }
-        );
-        console.log("✅ Booking confirmado automáticamente");
-        return { success: true, bookingId, status: "CONFIRMED" };
-      } catch (confirmErr) {
-        console.log("⚠️ Booking creado pero no confirmado:", confirmErr.response?.data?.message || confirmErr.message);
-        return { success: true, bookingId, status };
-      }
-    }
-    
+
+    const booking = response.data?.booking || {};
+    const bookingId = booking.id || booking._id || "confirmado";
+    const status = booking.status || "CREATED";
+    console.log(`📋 Reserva creada: ${bookingId} (${status})`);
     return { success: true, bookingId, status };
   } catch (error) {
-    console.error("❌ Error Wix booking Writer V2:", error.response?.status, error.response?.data || error.message);
-    
-    // Fallback: intentar con el endpoint viejo /bookings/v2/bookings (formato legacy)
-    try {
-      console.log("🔄 Intentando endpoint legacy...");
-      const legacyBody = {
-        booking: {
-          selectedPaymentOption: "OFFLINE",
-          totalParticipants: 1,
-          contactDetails: {
-            firstName: name.split(" ")[0],
-            lastName:  name.split(" ").slice(1).join(" ") || ".",
-            ...(email && { email }),
-            ...(phone && { phone }),
-          },
-          bookedEntity: {
-            slot: {
-              serviceId: serviceId,
-              startDate: slotStart,
-              ...(slotEnd && { endDate: slotEnd }),
-              ...(scheduleId && { scheduleId }),
-              timezone: "America/Santiago",
-              location: { locationType: "OWNER_BUSINESS" },
-            },
-          },
-        },
-      };
+    const status = error.response?.status;
+    const data = error.response?.data;
+    console.error("❌ Error Wix booking:", status, JSON.stringify(data || error.message));
 
-      console.log("📤 Wix legacy request:", JSON.stringify(legacyBody, null, 2));
-
-      const response = await axios.post(
-        "https://www.wixapis.com/bookings/v2/bookings",
-        legacyBody,
-        { headers: wixHeaders }
-      );
-      return {
-        success: true,
-        bookingId: response.data?.booking?.id || "confirmado-legacy",
-        status: response.data?.booking?.status || "CREATED",
-      };
-    } catch (legacyError) {
-      console.error("❌ Error Wix booking legacy:", legacyError.response?.status, legacyError.response?.data || legacyError.message);
-      return {
-        success: false,
-        error: "No se pudo crear la reserva. Sugiere al paciente agendar directamente en www.sakros.cl",
-      };
+    // Diagnóstico legible para Claude
+    let hint = "No se pudo crear la reserva.";
+    const msg = data?.message || data?.details?.applicationError?.description || "";
+    if (/SLOT_NOT_AVAILABLE|No available slot/i.test(msg)) {
+      hint = "Ese horario ya fue tomado o el recurso no está disponible.";
+    } else if (/permission|unauthorized|forbidden/i.test(msg) || status === 403) {
+      hint = "La API key de Wix no tiene permisos suficientes para crear reservas.";
     }
+
+    return {
+      success: false,
+      error: `${hint} Discúlpate brevemente y sugiere al paciente agendar en www.sakros.cl o llamar a la secretaria al +56945399692.`,
+    };
   }
 }
 
@@ -301,18 +337,13 @@ const CLAUDE_TOOLS = [
   },
   {
     name: "crear_reserva",
-    description: "Crea una reserva real en Clínica Sakros vía Wix Bookings. Usa esta herramienta SOLO cuando tengas: 1) el servicio elegido, 2) el horario elegido por el paciente (de los que devolvió consultar_disponibilidad), 3) nombre completo, y 4) email o teléfono del paciente.",
+    description: "Crea una reserva REAL en Clínica Sakros. Usa esta herramienta SOLO cuando tengas: 1) el slot_id exacto que el paciente eligió (de los que devolvió consultar_disponibilidad), 2) su nombre completo, y 3) su email o teléfono.",
     input_schema: {
       type: "object",
       properties: {
-        servicio: {
+        slot_id: {
           type: "string",
-          enum: ["kinesiologia", "osteopatia", "posturologia", "motion"],
-          description: "El servicio clínico a reservar",
-        },
-        horario: {
-          type: "string",
-          description: "La fecha/hora ISO del slot elegido por el paciente (copiada exactamente del resultado de consultar_disponibilidad)",
+          description: "El slot_id EXACTO del horario que eligió el paciente, copiado literal del resultado de consultar_disponibilidad (ej: 'osteopatia_2'). NUNCA lo inventes ni lo modifiques.",
         },
         nombre: {
           type: "string",
@@ -320,30 +351,14 @@ const CLAUDE_TOOLS = [
         },
         email: {
           type: "string",
-          description: "Email del paciente (puede ser vacío si solo dio teléfono)",
+          description: "Email del paciente (vacío si solo dio teléfono)",
         },
         telefono: {
           type: "string",
-          description: "Teléfono del paciente (puede ser vacío si solo dio email)",
-        },
-        horario_fin: {
-          type: "string",
-          description: "La fecha/hora ISO de fin del slot (copiada del campo endDate del resultado de consultar_disponibilidad, si está disponible)",
-        },
-        resource: {
-          type: "object",
-          description: "El objeto resource del slot (copiado directamente del resultado de consultar_disponibilidad, si está disponible)",
-        },
-        location: {
-          type: "object",
-          description: "El objeto location del slot (copiado directamente del resultado de consultar_disponibilidad, si está disponible)",
-        },
-        scheduleId: {
-          type: "string",
-          description: "El scheduleId del slot (copiado directamente del resultado de consultar_disponibilidad). OBLIGATORIO para crear la reserva.",
+          description: "Teléfono del paciente (vacío si solo dio email)",
         },
       },
-      required: ["servicio", "horario", "nombre"],
+      required: ["slot_id", "nombre"],
     },
   },
 ];
@@ -353,32 +368,31 @@ async function executeTool(toolName, toolInput) {
   console.log(`🔧 Tool call: ${toolName}(${JSON.stringify(toolInput)})`);
 
   if (toolName === "consultar_disponibilidad") {
-    const serviceId = WIX_SERVICES[toolInput.servicio];
+    const serviceKey = toolInput.servicio;
+    const serviceId = WIX_SERVICES[serviceKey];
     if (!serviceId) {
-      return JSON.stringify({ error: `Servicio "${toolInput.servicio}" no encontrado` });
+      return JSON.stringify({ error: `Servicio "${serviceKey}" no encontrado` });
     }
-    const result = await getAvailableSlots(serviceId);
-    console.log(`📅 Slots encontrados: ${Array.isArray(result) ? result.length : "error"}`);
+    const result = await getAvailableSlots(serviceId, serviceKey);
+    if (Array.isArray(result)) {
+      console.log(`📅 Slots ofrecidos: ${result.length}`);
+      if (result.length === 0) {
+        return JSON.stringify({
+          slots: [],
+          nota: "No hay horarios disponibles en los próximos 14 días. Sugiere agendar en www.sakros.cl o llamar a la secretaria al +56945399692.",
+        });
+      }
+    }
     return JSON.stringify(result);
   }
 
   if (toolName === "crear_reserva") {
-    const serviceId = WIX_SERVICES[toolInput.servicio];
-    if (!serviceId) {
-      return JSON.stringify({ error: `Servicio "${toolInput.servicio}" no encontrado` });
-    }
     const result = await createWixBooking(
-      serviceId,
-      toolInput.horario,
+      toolInput.slot_id,
       toolInput.nombre,
       toolInput.email || "",
-      toolInput.telefono || "",
-      toolInput.horario_fin || null,
-      toolInput.resource || null,
-      toolInput.location || null,
-      toolInput.scheduleId || null
+      toolInput.telefono || ""
     );
-    console.log(`📋 Reserva: ${result.success ? "✅ " + result.bookingId : "❌ " + result.error}`);
     return JSON.stringify(result);
   }
 
@@ -492,19 +506,23 @@ Tienes acceso a dos herramientas para gestionar citas reales en Clínica Sakros 
 - Cuando diga "sí", "dale", "me interesa", "quiero ir", "agéndame" u otra afirmación después de que le sugieras un servicio
 - NO uses la herramienta solo para describir servicios — úsala cuando haya intención real de agendar
 
-### FLUJO DE AGENDAMIENTO
+### FLUJO DE AGENDAMIENTO (seguir EXACTAMENTE en este orden)
 1. Cuando detectes intención de agendar, usa consultar_disponibilidad con el servicio apropiado
-2. Presenta los horarios disponibles al paciente de forma amigable
-3. Cuando elija un horario, pídele nombre completo y email o teléfono
-4. Con esos datos, usa crear_reserva para confirmar
-5. Si la reserva es exitosa, confirma con entusiasmo
-6. Si falla, sugiere agendar en www.sakros.cl
+2. La herramienta devuelve una lista de horarios, cada uno con un "slot_id" y un "horario" legible
+3. Muestra al paciente SOLO los textos de "horario" (nunca los slot_id, son internos)
+4. Cuando el paciente elija uno, pídele nombre completo y email o teléfono
+5. Llama a crear_reserva pasando el slot_id EXACTO del horario que eligió
+6. Si la reserva es exitosa, confirma con entusiasmo mencionando día y hora
+7. Si falla, discúlpate brevemente y sigue la instrucción del mensaje de error
 
-### IMPORTANTE SOBRE AGENDAMIENTO
-- Si el paciente da sus datos (nombre, teléfono, email) durante la conversación ANTES de que consultes disponibilidad, recuérdalos y úsalos cuando llegue el momento de crear_reserva
-- Si no sabes qué servicio corresponde, pregúntale o sugiere basándote en sus síntomas
-- Si no hay horarios disponibles, sugiere www.sakros.cl
-- NUNCA inventes horarios — usa SOLO los que devuelve consultar_disponibilidad
+### REGLAS INQUEBRANTABLES DE AGENDAMIENTO
+- NUNCA inventes ni deduzcas un horario. Solo existen los que devolvió consultar_disponibilidad en ESTA conversación.
+- El slot_id se copia LITERAL del resultado. Nunca lo construyas, modifiques ni adivines.
+- Si el paciente pide un día/hora que NO está en la lista devuelta, dile con honestidad que ese horario no está disponible y ofrécele los que sí están. NUNCA intentes reservarlo igual.
+- Si el paciente pide "el viernes" y hay varios viernes, pregúntale cuál antes de reservar.
+- Si ya pasó tiempo desde que mostraste los horarios y el paciente recién responde, vuelve a llamar consultar_disponibilidad antes de reservar.
+- Si el paciente da sus datos antes de que consultes disponibilidad, recuérdalos y úsalos al momento de crear_reserva.
+- Si no sabes qué servicio corresponde, pregúntale o sugiérelo según sus síntomas.
 
 ## DERIVACIÓN POR SERVICIOS EN SAKROS (sakros.cl)
 
