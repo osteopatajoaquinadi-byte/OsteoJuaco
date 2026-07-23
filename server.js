@@ -634,6 +634,33 @@ app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
   for (const entry of body.entry || []) {
+    // ── Procesar COMENTARIOS (lead magnets) ─────────────────
+    for (const change of entry.changes || []) {
+      if (change.field === "comments") {
+        const comment = change.value;
+        const commentText = (comment.text || "").toLowerCase().trim();
+        const commentId = comment.id;
+        const commenterId = comment.from?.id;
+        const commenterUsername = comment.from?.username || "unknown";
+
+        // Ignorar comentarios propios
+        if (commenterId === INSTAGRAM_ACCOUNT_ID) continue;
+
+        console.log(`💬 Comentario de @${commenterUsername}: "${comment.text}"`);
+
+        // Buscar keyword de lead magnet
+        for (const [keyword, magnet] of Object.entries(LEAD_MAGNETS)) {
+          if (commentText.includes(keyword) && !magnet.disabled) {
+            handleLeadMagnetComment(commentId, commenterId, commenterUsername, keyword).catch(err => {
+              console.error(`❌ Error en lead magnet "${keyword}":`, err.message);
+            });
+            break; // solo un lead magnet por comentario
+          }
+        }
+      }
+    }
+
+    // ── Procesar MENSAJES DIRECTOS ──────────────────────────
     for (const event of entry.messaging || []) {
       const senderId    = event.sender?.id;
       const recipientId = event.recipient?.id;
@@ -715,6 +742,129 @@ async function sendInstagramMessage(senderId, text) {
     );
   }
   console.log(`✅ Respuesta enviada a ${senderId} (${parts.length} parte${parts.length > 1 ? "s" : ""})`);
+}
+
+// ── Lead Magnets — Configuración de keywords y archivos ──────
+const GITHUB_ASSETS = "https://raw.githubusercontent.com/osteopatajoaquinadi-byte/OsteoJuaco/main/assets";
+
+const LEAD_MAGNETS = {
+  dormir: {
+    images: [`${GITHUB_ASSETS}/dormir/dormir_guia.jpg`],
+    pdf: null,
+    commentReply: "¡Te lo envío al DM! 📩",
+    dmText: "¡Hola! 🌙 Aquí tienes tu guía sobre qué sucede cuando no dormimos bien. Espero que te sirva — cualquier duda, estoy aquí para ayudarte 💪",
+    dmFollowUp: "Por cierto, si llevas tiempo sin descansar bien, el Método R.E.S.T. es un programa de 21 días que trabaja el sueño desde la raíz. Más info en www.metodorest.cl 😊",
+  },
+  errores: {
+    images: [
+      `${GITHUB_ASSETS}/errores/errores_page_1.jpg`,
+      `${GITHUB_ASSETS}/errores/errores_page_2.jpg`,
+      `${GITHUB_ASSETS}/errores/errores_page_3.jpg`,
+      `${GITHUB_ASSETS}/errores/errores_page_4.jpg`,
+    ],
+    pdf: `${GITHUB_ASSETS}/errores/errores_sueno.pdf`,
+    commentReply: "¡Te lo envío al DM! 📩",
+    dmText: "¡Hola! 🌙 Aquí tienes la guía de errores comunes que sabotean el sueño. Revísala con calma — cualquier duda, estoy aquí para ayudarte 💪",
+    dmFollowUp: "Si quieres la guía completa en PDF para descargar: " + `${GITHUB_ASSETS}/errores/errores_sueno.pdf` + "\n\n¿Sabías que el Método R.E.S.T. trabaja estos temas en profundidad? 21 días para recuperar tu sueño desde la raíz → www.metodorest.cl 😊",
+  },
+  ejercicio: {
+    images: [
+      `${GITHUB_ASSETS}/ejercicio/ejercicio_page_1.jpg`,
+      `${GITHUB_ASSETS}/ejercicio/ejercicio_page_2.jpg`,
+      `${GITHUB_ASSETS}/ejercicio/ejercicio_page_3.jpg`,
+    ],
+    pdf: `${GITHUB_ASSETS}/ejercicio/ejercicio_respiracion.pdf`,
+    commentReply: "¡Te lo envío al DM! 📩",
+    dmText: "¡Hola! 🌙 Aquí tienes un ejercicio de respiración 4-7-8 para tu sistema nervioso. Practícalo antes de dormir — cualquier duda, estoy aquí 💪",
+    dmFollowUp: "Si quieres la guía en PDF para descargar: " + `${GITHUB_ASSETS}/ejercicio/ejercicio_respiracion.pdf` + "\n\nEste ejercicio es parte del pilar S (Sistema Nervioso) del Método R.E.S.T. → www.metodorest.cl 😊",
+  },
+  stress: {
+    images: [],
+    pdf: null,
+    commentReply: "¡Te lo envío al DM! 📩",
+    dmText: "¡Hola! 🌙 Estamos preparando una guía especial sobre estrés. Por ahora te cuento que el Método R.E.S.T. trabaja directamente la regulación del sistema nervioso — un pilar clave para manejar el estrés crónico.",
+    dmFollowUp: "Más info en www.metodorest.cl — cualquier duda, estoy aquí 💪",
+    disabled: true,  // Activar cuando tenga archivo
+  },
+};
+
+// Registro para evitar enviar lead magnets duplicados al mismo usuario
+const leadMagnetsSent = {};
+
+// ── Responder a un comentario de Instagram ───────────────────
+async function replyToComment(commentId, text) {
+  try {
+    await axios.post(
+      `https://graph.instagram.com/v25.0/${commentId}/replies`,
+      { message: text },
+      { headers: { Authorization: `Bearer ${PAGE_ACCESS_TOKEN}` } }
+    );
+    console.log(`💬 Respuesta a comentario ${commentId}`);
+  } catch (error) {
+    console.error("❌ Error respondiendo comentario:", error.response?.status, error.response?.data?.error?.message || error.message);
+  }
+}
+
+// ── Enviar imagen por DM de Instagram ─────────────────────────
+async function sendInstagramImage(recipientId, imageUrl) {
+  try {
+    await axios.post(
+      `https://graph.instagram.com/v25.0/${INSTAGRAM_ACCOUNT_ID}/messages`,
+      {
+        recipient: { id: recipientId },
+        message: {
+          attachment: {
+            type: "image",
+            payload: { url: imageUrl },
+          },
+        },
+      },
+      { headers: { Authorization: `Bearer ${PAGE_ACCESS_TOKEN}` } }
+    );
+    console.log(`🖼️ Imagen enviada a ${recipientId}`);
+  } catch (error) {
+    console.error("❌ Error enviando imagen:", error.response?.status, error.response?.data?.error?.message || error.message);
+  }
+}
+
+// ── Manejar comentario con keyword de lead magnet ─────────────
+async function handleLeadMagnetComment(commentId, commenterId, commenterUsername, keyword) {
+  const magnet = LEAD_MAGNETS[keyword];
+  if (!magnet || magnet.disabled) return;
+
+  // Evitar duplicados (mismo usuario + mismo keyword en últimas 24h)
+  const key = `${commenterId}_${keyword}`;
+  const now = Date.now();
+  if (leadMagnetsSent[key] && now - leadMagnetsSent[key] < 86400000) {
+    console.log(`⏭️ Lead magnet ${keyword} ya enviado a ${commenterUsername} en las últimas 24h`);
+    return;
+  }
+  leadMagnetsSent[key] = now;
+
+  console.log(`🎯 Lead magnet "${keyword}" activado por @${commenterUsername}`);
+
+  // 1. Responder el comentario públicamente
+  await replyToComment(commentId, magnet.commentReply);
+
+  // 2. Enviar imágenes por DM
+  if (magnet.images.length > 0) {
+    // Primero el texto de bienvenida
+    await sendInstagramMessage(commenterId, magnet.dmText);
+
+    // Luego las imágenes
+    for (const imgUrl of magnet.images) {
+      await sendInstagramImage(commenterId, imgUrl);
+    }
+  }
+
+  // 3. Enviar follow-up con link de descarga + mención del método
+  if (magnet.dmFollowUp) {
+    // Pequeña pausa para que las imágenes lleguen primero
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    await sendInstagramMessage(commenterId, magnet.dmFollowUp);
+  }
+
+  console.log(`✅ Lead magnet "${keyword}" completo para @${commenterUsername}`);
 }
 
 // ── Health check ──────────────────────────────────────────────
