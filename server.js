@@ -1014,14 +1014,14 @@ const LEAD_MAGNETS = {
     pdf: `${GITHUB_ASSETS}/errores/errores_sueno.pdf`,
     commentReply: "¡Te lo envío al DM! 📩",
     dmText: "¡Hola! 🌙 Aquí tienes la guía de errores comunes que sabotean el sueño.",
-    dmFollowUp: "Descarga la guía completa en PDF aquí:\n${GITHUB_ASSETS}/errores/errores_sueno.pdf\n\n¿Sabías que el Método R.E.S.T. trabaja estos temas en profundidad? 21 días para recuperar tu sueño desde la raíz → www.metodorest.cl 😊\n\nCualquier duda, estoy aquí 💪",
+    dmFollowUp: "Descarga la guía completa en PDF aquí:\nhttps://raw.githubusercontent.com/osteopatajoaquinadi-byte/OsteoJuaco/main/assets/errores/errores_sueno.pdf\n\n¿Sabías que el Método R.E.S.T. trabaja estos temas en profundidad? 21 días para recuperar tu sueño desde la raíz → www.metodorest.cl 😊\n\nCualquier duda, estoy aquí 💪",
   },
   ejercicio: {
     images: [`${GITHUB_ASSETS}/ejercicio/ejercicio_page_1.jpg`],
     pdf: `${GITHUB_ASSETS}/ejercicio/ejercicio_respiracion.pdf`,
     commentReply: "¡Te lo envío al DM! 📩",
     dmText: "¡Hola! 🌙 Aquí tienes un ejercicio de respiración 4-7-8 para tu sistema nervioso. Practícalo antes de dormir.",
-    dmFollowUp: "Descarga la guía completa en PDF aquí:\n${GITHUB_ASSETS}/ejercicio/ejercicio_respiracion.pdf\n\nEste ejercicio es parte del pilar S (Sistema Nervioso) del Método R.E.S.T. → www.metodorest.cl 😊\n\nCualquier duda, estoy aquí 💪",
+    dmFollowUp: "Descarga la guía completa en PDF aquí:\nhttps://raw.githubusercontent.com/osteopatajoaquinadi-byte/OsteoJuaco/main/assets/ejercicio/ejercicio_respiracion.pdf\n\nEste ejercicio es parte del pilar S (Sistema Nervioso) del Método R.E.S.T. → www.metodorest.cl 😊\n\nCualquier duda, estoy aquí 💪",
   },
   stress: {
     images: [],
@@ -1033,13 +1033,12 @@ const LEAD_MAGNETS = {
   },
   curso: {
     images: [
-      `${GITHUB_ASSETS}/curso/curso_page_1.jpg`,
-      `${GITHUB_ASSETS}/curso/curso_page_2.jpg`,
+      `${GITHUB_ASSETS}/curso/curso_pag1.jpg`,
     ],
     pdf: `${GITHUB_ASSETS}/curso/ficha_curso.pdf`,
     commentReply: "¡Te envío la info al DM! 📩",
     dmText: "¡Hola! 👋 Te comparto la info del curso presencial *Dolor Lumbar Crónico — el diafragma y el control lumbopélvico*, dictado por Joaquín Adi.\n\n📅 5 y 6 de septiembre · Clínica Sakros, Viña del Mar\n⏱️ 14 horas · 5 bloques prácticos\n👥 Solo 12 cupos · dirigido a kinesiólogos",
-    dmFollowUp: "💰 Preventa $290.000 (hasta el 6 de agosto) · Valor general $360.000\n\nPara reservar tu cupo o resolver dudas, escríbenos directo por WhatsApp: *+56 9 6847 7060* 📲\n\n¡Te esperamos! 🙌",
+    dmFollowUp: "📄 Ficha completa con el programa:\nhttps://raw.githubusercontent.com/osteopatajoaquinadi-byte/OsteoJuaco/main/assets/curso/ficha_curso.pdf\n\n💰 Preventa $290.000 (hasta el 6 de agosto) · Valor general $360.000\n\nPara reservar tu cupo o resolver dudas, escríbenos directo por WhatsApp: *+56 9 6847 7060* 📲\n\n¡Te esperamos! 🙌",
   },
 };
 
