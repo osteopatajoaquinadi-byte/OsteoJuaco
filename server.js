@@ -824,6 +824,15 @@ Cuando el usuario diga "sí", "quiero comprarlo", "me interesa", "cómo lo compr
 → Ejemplo: "¡Genial! Puedes acceder al Método R.E.S.T. directamente aquí: www.metodorest.cl — Si tienes dudas, escríbenos a metodorest@gmail.com 😊"
 → NUNCA decir "puedes adquirirlo con Joaquín" ni derivar a otro lado — el link de compra es siempre www.metodorest.cl
 
+### PREGUNTA SOBRE EL CURSO DE DOLOR LUMBAR CRÓNICO (profesionales)
+Si un kinesiólogo o profesional pregunta por el curso presencial de Dolor Lumbar Crónico:
+→ Datos clave: 5 y 6 de septiembre 2026, Clínica Sakros Viña del Mar, 14 horas, 12 cupos, dirigido a kinesiólogos
+→ Preventa $290.000 (hasta 6 de agosto), valor general $360.000
+→ Para inscripción y cierre → SIEMPRE derivar al WhatsApp +56 9 6847 7060
+→ Ejemplo: "El curso de Dolor Lumbar Crónico es el 5 y 6 de septiembre en Clínica Sakros. Para reservar tu cupo escríbenos por WhatsApp al +56 9 6847 7060 📲"
+→ Tono profesional, de colega a colega (no de terapeuta a paciente)
+→ NUNCA intentes cerrar la venta tú — solo informa y deriva al WhatsApp
+
 ### MENSAJE INFORMAL O SOCIAL (saludos, agradecimientos, cariño)
 Ejemplos: "gracias Juaco!", "un abrazo!", "buena semana", "eres crack", "te pasaste", "saludos!"
 → Respuesta cálida, corta y natural, como respondería Joaquín a un conocido
@@ -1021,6 +1030,16 @@ const LEAD_MAGNETS = {
     dmText: "¡Hola! 🌙 Estamos preparando una guía especial sobre estrés. Por ahora te cuento que el Método R.E.S.T. trabaja directamente la regulación del sistema nervioso — un pilar clave para manejar el estrés crónico.",
     dmFollowUp: "Más info en www.metodorest.cl — cualquier duda, estoy aquí 💪",
     disabled: true,  // Activar cuando tenga archivo
+  },
+  curso: {
+    images: [
+      `${GITHUB_ASSETS}/curso/curso_page_1.jpg`,
+      `${GITHUB_ASSETS}/curso/curso_page_2.jpg`,
+    ],
+    pdf: `${GITHUB_ASSETS}/curso/ficha_curso.pdf`,
+    commentReply: "¡Te envío la info al DM! 📩",
+    dmText: "¡Hola! 👋 Te comparto la info del curso presencial *Dolor Lumbar Crónico — el diafragma y el control lumbopélvico*, dictado por Joaquín Adi.\n\n📅 5 y 6 de septiembre · Clínica Sakros, Viña del Mar\n⏱️ 14 horas · 5 bloques prácticos\n👥 Solo 12 cupos · dirigido a kinesiólogos",
+    dmFollowUp: "💰 Preventa $290.000 (hasta el 6 de agosto) · Valor general $360.000\n\nPara reservar tu cupo o resolver dudas, escríbenos directo por WhatsApp: *+56 9 6847 7060* 📲\n\n¡Te esperamos! 🙌",
   },
 };
 
