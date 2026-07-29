@@ -707,6 +707,38 @@ Director de Clínica Sakros en Viña del Mar, Chile.
 3. Sistema nervioso autónomo — activación vagal, regulación simpática
 4. Timing ultradiano — ciclos de 90 min y eficiencia del sueño
 
+## FLUJO DEL CURSO "DOLOR LUMBAR CRÓNICO" (gancho profesional)
+Cuando una persona escribe interesada en el curso (o ya recibió el mensaje de bienvenida del curso), estás en un flujo especial dirigido a PROFESIONALES DE LA SALUD. Sigue este guion:
+
+DATOS DEL CURSO:
+- Nombre: Dolor Lumbar Crónico — el diafragma y el control lumbopélvico
+- Fecha: sábado 5 y domingo 6 de septiembre de 2026
+- Lugar: Clínica Sakros, Viña del Mar
+- Duración: 14 horas · 5 bloques prácticos · 12 cupos
+- Docente: Joaquín Adi
+- Dirigido a: kinesiólogos, osteópatas, fisioterapeutas, médicos y estudiantes avanzados del área de salud
+- Preventa: $290.000 (hasta el 6 de agosto) · Valor general: $360.000
+- Ficha PDF: https://raw.githubusercontent.com/osteopatajoaquinadi-byte/OsteoJuaco/main/assets/curso/ficha_curso.pdf
+- WhatsApp de inscripción (atiende Joaquín directamente): https://wa.me/56968477060
+
+EL FILTRO (paso clave):
+El mensaje de bienvenida ya le preguntó si trabaja con pacientes de dolor persistente / si es del área de la salud. Según cómo responda:
+
+**Si confirma que es del área o trabaja con dolor persistente** (kinesiólogo, osteópata, fisio, médico, estudiante avanzado de salud):
+"¡Perfecto! Acá va el programa completo con el detalle de los dos días y los valores 👇\n\n📄 https://raw.githubusercontent.com/osteopatajoaquinadi-byte/OsteoJuaco/main/assets/curso/ficha_curso.pdf\n\nPara reservar tu cupo (preventa hasta el 6 de agosto) y resolver cualquier duda directo con Joaquín, escríbele por WhatsApp acá:\n👉 https://wa.me/56968477060?text=Hola%2C%20vengo%20de%20Instagram%20y%20me%20interesa%20el%20curso%20de%20Dolor%20Lumbar%20Cr%C3%B3nico\n\nTe atiende él mismo. 🙌"
+
+**Si NO es del área de la salud, o su respuesta no confirma el filtro:**
+"Gracias por tu interés 🙌 Este curso es bastante técnico y está pensado para profesionales que tratan dolor persistente. Si igual quieres el programa o tienes dudas, escríbeme y lo vemos: https://wa.me/56968477060"
+
+**Si sigue conversando después (dudas, agradecimientos):**
+Responde breve y cálido. Cierre tipo: "Cualquier cosa que necesites, por acá o por WhatsApp estoy. ¡Que tengas buen día!"
+
+REGLAS DEL FLUJO CURSO:
+- NO derives al curso a la secretaria (+56945399692) ni a metodorest@gmail.com. La inscripción del curso es SOLO por el WhatsApp +56968477060.
+- NO mezcles el curso con el Método R.E.S.T. ni con agendamiento de horas clínicas.
+- Envía siempre el link de WhatsApp con el texto pre-cargado en la versión para profesionales.
+- Sé cálido y directo, de colega a colega. No uses lenguaje de venta agresivo.
+
 ## AGENDAMIENTO DE CITAS EN CLÍNICA SAKROS
 Tienes acceso a dos herramientas para gestionar citas reales en Clínica Sakros (sakros.cl):
 - **consultar_disponibilidad**: consulta horarios reales disponibles para un servicio
@@ -1032,18 +1064,20 @@ const LEAD_MAGNETS = {
     disabled: true,  // Activar cuando tenga archivo
   },
   curso: {
-    images: [
-      `${GITHUB_ASSETS}/curso/curso_pag1.jpg`,
-    ],
+    images: [],
     pdf: `${GITHUB_ASSETS}/curso/ficha_curso.pdf`,
-    commentReply: "¡Te envío la info al DM! 📩",
-    dmText: "¡Hola! 👋 Te comparto la info del curso presencial *Dolor Lumbar Crónico — el diafragma y el control lumbopélvico*, dictado por Joaquín Adi.\n\n📅 5 y 6 de septiembre · Clínica Sakros, Viña del Mar\n⏱️ 14 horas · 5 bloques prácticos\n👥 Solo 12 cupos · dirigido a kinesiólogos",
-    dmFollowUp: "📄 Ficha completa con el programa:\nhttps://raw.githubusercontent.com/osteopatajoaquinadi-byte/OsteoJuaco/main/assets/curso/ficha_curso.pdf\n\n💰 Preventa $290.000 (hasta el 6 de agosto) · Valor general $360.000\n\nPara reservar tu cupo o resolver dudas, escríbenos directo por WhatsApp: *+56 9 6847 7060* 📲\n\n¡Te esperamos! 🙌",
+    commentReply: "¡Te escribo al DM! 📩",
+    conversational: true,  // No dispara follow-up automático; Claude conduce el filtro
+    dmText: "¡Hola! Gracias por tu interés en el curso de *Dolor Lumbar Crónico* (5 y 6 de septiembre, Viña del Mar). 🙌\n\nEn una línea: aprendes a leer el perfil lumbopélvico de cada paciente —control motor, sensibilización y VFC— y a decidir el tratamiento en vez de aplicar un protocolo cerrado. 14 horas, 12 cupos, muy práctico.\n\nAntes de pasarte el programa, ¿trabajas con pacientes de dolor persistente? El curso está pensado para profesionales de la salud del área —kinesiólogos, osteópatas, fisioterapeutas, médicos— y estudiantes avanzados.",
+    dmFollowUp: null,
   },
 };
 
 // Registro para evitar enviar lead magnets duplicados al mismo usuario
 const leadMagnetsSent = {};
+
+// Registro de usuarios en flujo conversacional del curso (para que Claude conduzca el filtro)
+const cursoContext = {};
 
 // ── Responder a un comentario de Instagram ───────────────────
 async function replyToComment(commentId, text) {
@@ -1100,22 +1134,31 @@ async function handleLeadMagnetComment(commentId, commenterId, commenterUsername
   // 1. Responder el comentario públicamente
   await replyToComment(commentId, magnet.commentReply);
 
-  // 2. Enviar imágenes por DM
-  if (magnet.images.length > 0) {
-    // Primero el texto de bienvenida
+  // 2. Enviar el texto de bienvenida (siempre, haya o no imágenes)
+  if (magnet.dmText) {
     await sendInstagramMessage(commenterId, magnet.dmText);
-
-    // Luego las imágenes
-    for (const imgUrl of magnet.images) {
-      await sendInstagramImage(commenterId, imgUrl);
-    }
   }
 
-  // 3. Enviar follow-up con link de descarga + mención del método
-  if (magnet.dmFollowUp) {
-    // Pequeña pausa para que las imágenes lleguen primero
+  // 3. Enviar imágenes por DM (si las hay)
+  for (const imgUrl of magnet.images) {
+    await sendInstagramImage(commenterId, imgUrl);
+  }
+
+  // 4. Follow-up automático (solo si NO es conversacional)
+  if (magnet.dmFollowUp && !magnet.conversational) {
     await new Promise(resolve => setTimeout(resolve, 2000));
     await sendInstagramMessage(commenterId, magnet.dmFollowUp);
+  }
+
+  // 5. Si es conversacional (curso), marcar el contexto para que Claude conduzca el filtro
+  if (magnet.conversational) {
+    if (!conversations[commenterId]) conversations[commenterId] = [];
+    conversations[commenterId].push({
+      role: "assistant",
+      content: magnet.dmText,
+    });
+    cursoContext[commenterId] = Date.now();
+    console.log(`🎓 Modo curso activado para @${commenterUsername} — Claude conduce el filtro`);
   }
 
   console.log(`✅ Lead magnet "${keyword}" completo para @${commenterUsername}`);
