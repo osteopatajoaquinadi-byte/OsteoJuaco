@@ -725,7 +725,7 @@ EL FILTRO (paso clave):
 El mensaje de bienvenida ya le preguntó si trabaja con pacientes de dolor persistente / si es del área de la salud. Según cómo responda:
 
 **Si confirma que es del área o trabaja con dolor persistente** (kinesiólogo, osteópata, fisio, médico, estudiante avanzado de salud):
-"¡Perfecto! Acá va el programa completo con el detalle de los dos días y los valores 👇\n\n📄 https://raw.githubusercontent.com/osteopatajoaquinadi-byte/OsteoJuaco/main/assets/curso/ficha_curso.pdf\n\nPara reservar tu cupo (preventa hasta el 6 de agosto) y resolver cualquier duda directo con Joaquín, escríbele por WhatsApp acá:\n👉 https://wa.me/56968477060?text=Hola%2C%20vengo%20de%20Instagram%20y%20me%20interesa%20el%20curso%20de%20Dolor%20Lumbar%20Cr%C3%B3nico\n\nTe atiende él mismo. 🙌"
+"¡Perfecto! Arriba te dejé la ficha con el detalle 🙌\n\nEs un curso muy práctico: 14 horas, 12 cupos, evaluación pre-post con VFC en sala. Preventa $290.000 hasta el 6 de agosto, valor general $360.000.\n\nPara reservar tu cupo y resolver cualquier duda directo con Joaquín, escríbele por WhatsApp acá:\n👉 https://wa.me/56968477060?text=Hola%2C%20vengo%20de%20Instagram%20y%20me%20interesa%20el%20curso%20de%20Dolor%20Lumbar%20Cr%C3%B3nico\n\nTe atiende él mismo. 🙌"
 
 **Si NO es del área de la salud, o su respuesta no confirma el filtro:**
 "Gracias por tu interés 🙌 Este curso es bastante técnico y está pensado para profesionales que tratan dolor persistente. Si igual quieres el programa o tienes dudas, escríbeme y lo vemos: https://wa.me/56968477060"
@@ -734,7 +734,9 @@ El mensaje de bienvenida ya le preguntó si trabaja con pacientes de dolor persi
 Responde breve y cálido. Cierre tipo: "Cualquier cosa que necesites, por acá o por WhatsApp estoy. ¡Que tengas buen día!"
 
 REGLAS DEL FLUJO CURSO:
-- NO derives al curso a la secretaria (+56945399692) ni a metodorest@gmail.com. La inscripción del curso es SOLO por el WhatsApp +56968477060.
+- La ficha del curso ya se le envió al paciente como IMAGEN. Refiérete a ella como "la ficha que te dejé arriba", NO mandes links de PDF crudos (se ven mal).
+- El PDF completo y la inscripción van por WhatsApp +56968477060 — ahí Joaquín le pasa todo el detalle formal.
+- NO derives el curso a la secretaria (+56945399692) ni a metodorest@gmail.com.
 - NO mezcles el curso con el Método R.E.S.T. ni con agendamiento de horas clínicas.
 - Envía siempre el link de WhatsApp con el texto pre-cargado en la versión para profesionales.
 - Sé cálido y directo, de colega a colega. No uses lenguaje de venta agresivo.
@@ -968,6 +970,18 @@ app.post("/webhook", async (req, res) => {
         // Inicializar historial
         if (!conversations[senderId]) conversations[senderId] = [];
 
+        // Si está en modo curso y aún no se le envió la ficha, mandarla ahora
+        // (su respuesta abrió la ventana de conversación, ya se puede enviar imagen)
+        if (cursoContext[senderId] && !cursoFichaSent[senderId]) {
+          cursoFichaSent[senderId] = true;
+          try {
+            await sendInstagramImage(senderId, `${GITHUB_ASSETS}/curso/curso_pag1.jpg`);
+            console.log(`🎓 Ficha del curso enviada a ${senderId}`);
+          } catch (imgErr) {
+            console.error("⚠️ No se pudo enviar la ficha:", imgErr.response?.status || imgErr.message);
+          }
+        }
+
         // Agregar mensaje del usuario
         conversations[senderId].push({ role: "user", content: text });
 
@@ -1082,11 +1096,13 @@ const LEAD_MAGNETS = {
     disabled: true,  // Activar cuando tenga archivo
   },
   curso: {
-    images: [],
+    images: [`${GITHUB_ASSETS}/curso/curso_pag1.jpg`],
     pdf: `${GITHUB_ASSETS}/curso/ficha_curso.pdf`,
     commentReply: "¡Te escribo al DM! 📩",
     conversational: true,  // No dispara follow-up automático; Claude conduce el filtro
-    dmText: "¡Hola! Gracias por tu interés en el curso de *Dolor Lumbar Crónico* (5 y 6 de septiembre, Viña del Mar). 🙌\n\nEn una línea: aprendes a leer el perfil lumbopélvico de cada paciente —control motor, sensibilización y VFC— y a decidir el tratamiento en vez de aplicar un protocolo cerrado. 14 horas, 12 cupos, muy práctico.\n\nAntes de pasarte el programa, ¿trabajas con pacientes de dolor persistente? El curso está pensado para profesionales de la salud del área —kinesiólogos, osteópatas, fisioterapeutas, médicos— y estudiantes avanzados.",
+    // Este texto se envía como PRIVATE REPLY al comentario (única permitida).
+    // Cuando la persona responda, se abre la ventana y Claude manda la imagen + filtro.
+    dmText: "Te envío el programa del curso *Dolor Lumbar Crónico* (5 y 6 de septiembre, Viña del Mar). 🙌\n\nAntes de pasártelo, cuéntame: ¿ves pacientes con dolor lumbar persistente, o que pienses que tengan desregulación de su sistema nervioso?",
     dmFollowUp: null,
   },
 };
@@ -1096,6 +1112,9 @@ const leadMagnetsSent = {};
 
 // Registro de usuarios en flujo conversacional del curso (para que Claude conduzca el filtro)
 const cursoContext = {};
+
+// Registro de a quién ya se le envió la imagen de la ficha (evita reenvíos)
+const cursoFichaSent = {};
 
 // ── Responder a un comentario de Instagram ───────────────────
 async function replyToComment(commentId, text) {
