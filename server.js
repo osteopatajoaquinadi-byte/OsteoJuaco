@@ -991,6 +991,24 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ── Función para enviar mensaje a Instagram ───────────────────
+// ── Private Reply: DM en respuesta a un comentario ────────────
+// Instagram NO permite enviar un DM normal a alguien que solo comentó (error 403
+// "outside allowed window"). El endpoint de private replies sí lo permite, pero:
+//  - Solo se puede enviar UNA private reply por comentario
+//  - Se dirige por comment_id, no por user_id
+//  - Llega a Inbox si te sigue, o a Solicitudes si no te sigue
+async function sendPrivateReply(commentId, text) {
+  await axios.post(
+    `https://graph.instagram.com/v25.0/${INSTAGRAM_ACCOUNT_ID}/messages`,
+    {
+      recipient: { comment_id: commentId },
+      message:   { text: text },
+    },
+    { headers: { Authorization: `Bearer ${PAGE_ACCESS_TOKEN}` } }
+  );
+  console.log(`📨 Private reply enviada al comentario ${commentId}`);
+}
+
 async function sendInstagramMessage(senderId, text) {
   // Instagram tiene límite de 1000 caracteres por mensaje
   // Si la respuesta es más larga, enviar en partes
@@ -1131,26 +1149,37 @@ async function handleLeadMagnetComment(commentId, commenterId, commenterUsername
 
   console.log(`🎯 Lead magnet "${keyword}" activado por @${commenterUsername}`);
 
-  // 1. Responder el comentario públicamente
-  await replyToComment(commentId, magnet.commentReply);
-
-  // 2. Enviar el texto de bienvenida (siempre, haya o no imágenes)
-  if (magnet.dmText) {
-    await sendInstagramMessage(commenterId, magnet.dmText);
+  // Instagram solo permite UNA private reply por comentario, así que consolidamos
+  // todo el contenido (bienvenida + link PDF + follow-up) en un único mensaje.
+  const partes = [magnet.dmText];
+  if (magnet.pdf) {
+    partes.push(`\n📄 Descarga aquí: ${magnet.pdf}`);
   }
-
-  // 3. Enviar imágenes por DM (si las hay)
-  for (const imgUrl of magnet.images) {
-    await sendInstagramImage(commenterId, imgUrl);
-  }
-
-  // 4. Follow-up automático (solo si NO es conversacional)
   if (magnet.dmFollowUp && !magnet.conversational) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    await sendInstagramMessage(commenterId, magnet.dmFollowUp);
+    partes.push(`\n${magnet.dmFollowUp}`);
+  }
+  const mensajeCompleto = partes.filter(Boolean).join("\n");
+
+  try {
+    // Private reply: el ÚNICO camino permitido para escribirle a alguien que
+    // solo comentó (un DM normal daría 403 "outside allowed window").
+    await sendPrivateReply(commentId, mensajeCompleto);
+  } catch (error) {
+    const sub = error.response?.data?.error?.error_subcode;
+    const msg = error.response?.data?.error?.message || error.message;
+    console.error(`❌ Error private reply "${keyword}":`, error.response?.status, sub, msg);
+    // Si la private reply falla, intentamos responder el comentario públicamente
+    // pidiéndole que nos escriba por DM (así abre la ventana de conversación).
+    try {
+      await replyToComment(commentId, "¡Hola! Te intenté escribir por privado 📩 Si no te llegó, mándanos un DM y te paso la info al toque 🙌");
+    } catch (e) {
+      console.error("❌ Tampoco se pudo responder el comentario:", e.message);
+    }
+    return;
   }
 
-  // 5. Si es conversacional (curso), marcar el contexto para que Claude conduzca el filtro
+  // Si es conversacional (curso), registrar el contexto para que Claude conduzca
+  // el filtro cuando la persona responda a la private reply.
   if (magnet.conversational) {
     if (!conversations[commenterId]) conversations[commenterId] = [];
     conversations[commenterId].push({
