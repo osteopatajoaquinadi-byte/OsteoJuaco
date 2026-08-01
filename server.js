@@ -974,12 +974,18 @@ app.post("/webhook", async (req, res) => {
         // (su respuesta abrió la ventana de conversación, ya se puede enviar imagen)
         if (cursoContext[senderId] && !cursoFichaSent[senderId]) {
           cursoFichaSent[senderId] = true;
-          try {
-            await sendInstagramImage(senderId, `${GITHUB_ASSETS}/curso/curso_pag1.jpg`);
-            console.log(`🎓 Ficha del curso enviada a ${senderId}`);
-          } catch (imgErr) {
-            console.error("⚠️ No se pudo enviar la ficha:", imgErr.response?.status || imgErr.message);
+          const paginas = [
+            `${GITHUB_ASSETS}/curso/curso_pag1.jpg`,
+            `${GITHUB_ASSETS}/curso/curso_pag2.jpg`,
+          ];
+          for (const pag of paginas) {
+            try {
+              await sendInstagramImage(senderId, pag);
+            } catch (imgErr) {
+              console.error("⚠️ No se pudo enviar página de ficha:", imgErr.response?.status || imgErr.message);
+            }
           }
+          console.log(`🎓 Ficha del curso (2 páginas) enviada a ${senderId}`);
         }
 
         // Agregar mensaje del usuario
@@ -1096,7 +1102,7 @@ const LEAD_MAGNETS = {
     disabled: true,  // Activar cuando tenga archivo
   },
   curso: {
-    images: [`${GITHUB_ASSETS}/curso/curso_pag1.jpg`],
+    images: [`${GITHUB_ASSETS}/curso/curso_pag1.jpg`, `${GITHUB_ASSETS}/curso/curso_pag2.jpg`],
     pdf: `${GITHUB_ASSETS}/curso/ficha_curso.pdf`,
     commentReply: "¡Te escribo al DM! 📩",
     conversational: true,  // No dispara follow-up automático; Claude conduce el filtro
