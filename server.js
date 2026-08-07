@@ -970,22 +970,60 @@ app.post("/webhook", async (req, res) => {
         // Inicializar historial
         if (!conversations[senderId]) conversations[senderId] = [];
 
-        // Si está en modo curso y aún no se le envió la ficha, mandarla ahora
-        // (su respuesta abrió la ventana de conversación, ya se puede enviar imagen)
+        // ── FLUJO CURSO: capturar número de WhatsApp antes de enviar la ficha ──
         if (cursoContext[senderId] && !cursoFichaSent[senderId]) {
-          cursoFichaSent[senderId] = true;
-          const paginas = [
-            `${GITHUB_ASSETS}/curso/curso_pag1.jpg`,
-            `${GITHUB_ASSETS}/curso/curso_pag2.jpg`,
-          ];
-          for (const pag of paginas) {
+          const telefono = extraerTelefono(text);
+
+          if (telefono) {
+            // Tiene número válido → registrar, avisar a Juaco y enviar la ficha
+            cursoFichaSent[senderId] = true;
+
+            // 1. Reenviar el lead a Juaco por DM
             try {
-              await sendInstagramImage(senderId, pag);
-            } catch (imgErr) {
-              console.error("⚠️ No se pudo enviar página de ficha:", imgErr.response?.status || imgErr.message);
+              await sendInstagramMessage(
+                OWNER_IG_ID,
+                `🎓 *Nuevo interesado en el curso*\n\n📲 WhatsApp: ${telefono}\n💬 Escribió: "${text}"\n\n(Instagram ID: ${senderId})`
+              );
+              console.log(`📨 Lead del curso reenviado a Juaco: ${telefono}`);
+            } catch (e) {
+              console.error("⚠️ No se pudo avisar a Juaco:", e.response?.data?.error?.message || e.message);
             }
+
+            // 2. Enviar las 2 páginas de la ficha al interesado
+            for (const pag of [`${GITHUB_ASSETS}/curso/curso_pag1.jpg`, `${GITHUB_ASSETS}/curso/curso_pag2.jpg`]) {
+              try {
+                await sendInstagramImage(senderId, pag);
+              } catch (imgErr) {
+                console.error("⚠️ No se pudo enviar página de ficha:", imgErr.response?.status || imgErr.message);
+              }
+            }
+            console.log(`🎓 Ficha del curso enviada a ${senderId}`);
+
+            // 3. Mensaje de cierre con el WhatsApp de inscripción
+            try {
+              await sendInstagramMessage(
+                senderId,
+                "¡Listo! Arriba te dejé la ficha con todo el detalle del programa. 🙌\n\nEs un curso muy práctico: 14 horas, 12 cupos, evaluación pre-post con VFC en sala. Preventa $290.000 hasta el 6 de agosto.\n\nCualquier duda o para reservar tu cupo, escríbenos directo por WhatsApp: +56 9 6847 7060 📲\n\n¡Te esperamos!"
+              );
+            } catch (e) {
+              console.error("⚠️ No se pudo enviar cierre del curso:", e.message);
+            }
+
+            // Cerrar el modo curso para este usuario
+            delete cursoContext[senderId];
+            continue; // no pasar por Claude, el flujo del curso ya está completo
+          } else {
+            // No dio número válido → pedirlo de nuevo (sin activar Claude)
+            try {
+              await sendInstagramMessage(
+                senderId,
+                "¡Genial! Para enviarte el programa completo necesito tu número de WhatsApp 📲 (con el código, por ejemplo +56 9 1234 5678). ¿Me lo dejas?"
+              );
+            } catch (e) {
+              console.error("⚠️ No se pudo repedir número:", e.message);
+            }
+            continue; // esperar a que mande el número
           }
-          console.log(`🎓 Ficha del curso (2 páginas) enviada a ${senderId}`);
         }
 
         // Agregar mensaje del usuario
@@ -1108,7 +1146,7 @@ const LEAD_MAGNETS = {
     conversational: true,  // No dispara follow-up automático; Claude conduce el filtro
     // Este texto se envía como PRIVATE REPLY al comentario (única permitida).
     // Cuando la persona responda, se abre la ventana y Claude manda la imagen + filtro.
-    dmText: "Te envío el programa del curso *Dolor Lumbar Crónico* (5 y 6 de septiembre, Viña del Mar). 🙌\n\nAntes de pasártelo, cuéntame: ¿ves pacientes con dolor lumbar persistente, o que pienses que tengan desregulación de su sistema nervioso?",
+    dmText: "¡Hola! Gracias por tu interés en el curso *Dolor Lumbar Crónico* (5 y 6 de septiembre, Viña del Mar). 🙌\n\nPara enviarte el programa completo, ¿me dejas tu número de WhatsApp? Así también puedo pasarte cualquier novedad o resolver dudas directo. 📲",
     dmFollowUp: null,
   },
 };
@@ -1121,6 +1159,24 @@ const cursoContext = {};
 
 // Registro de a quién ya se le envió la imagen de la ficha (evita reenvíos)
 const cursoFichaSent = {};
+
+// Instagram ID de Juaco (@osteopatajoaquinadi) — para reenviarle los leads del curso
+const OWNER_IG_ID = "17841400494105253";
+
+// Extraer un número de teléfono de un texto libre.
+// Devuelve el número normalizado si parece válido, o null si no hay.
+function extraerTelefono(texto) {
+  if (!texto) return null;
+  // Quitar todo lo que no sea dígito o + para contar dígitos reales
+  const soloNumeros = texto.replace(/[^\d+]/g, "");
+  const digitos = soloNumeros.replace(/\D/g, "");
+  // Un teléfono chileno válido tiene 8-9 dígitos (sin código) o 11 (con +56 9)
+  // Aceptamos entre 8 y 15 dígitos para cubrir formatos internacionales
+  if (digitos.length >= 8 && digitos.length <= 15) {
+    return soloNumeros;
+  }
+  return null;
+}
 
 // ── Responder a un comentario de Instagram ───────────────────
 async function replyToComment(commentId, text) {
