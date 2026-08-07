@@ -1231,9 +1231,10 @@ async function handleLeadMagnetComment(commentId, commenterId, commenterUsername
   console.log(`🎯 Lead magnet "${keyword}" activado por @${commenterUsername}`);
 
   // Instagram solo permite UNA private reply por comentario, así que consolidamos
-  // todo el contenido (bienvenida + link PDF + follow-up) en un único mensaje.
+  // el contenido en un único mensaje. En flujos conversacionales (curso) NO se
+  // agrega el link del PDF: ahí el material va por otro camino (fotos tras el número).
   const partes = [magnet.dmText];
-  if (magnet.pdf) {
+  if (magnet.pdf && !magnet.conversational) {
     partes.push(`\n📄 Descarga aquí: ${magnet.pdf}`);
   }
   if (magnet.dmFollowUp && !magnet.conversational) {
