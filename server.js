@@ -1230,6 +1230,15 @@ async function handleLeadMagnetComment(commentId, commenterId, commenterUsername
 
   console.log(`🎯 Lead magnet "${keyword}" activado por @${commenterUsername}`);
 
+  // Responder públicamente el comentario (para que otros vean que respondemos)
+  if (magnet.commentReply) {
+    try {
+      await replyToComment(commentId, magnet.commentReply);
+    } catch (e) {
+      console.error("⚠️ No se pudo responder el comentario público:", e.response?.status || e.message);
+    }
+  }
+
   // Instagram solo permite UNA private reply por comentario, así que consolidamos
   // el contenido en un único mensaje. En flujos conversacionales (curso) NO se
   // agrega el link del PDF: ahí el material va por otro camino (fotos tras el número).
