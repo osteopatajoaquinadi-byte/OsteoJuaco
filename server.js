@@ -1110,6 +1110,13 @@ async function sendInstagramMessage(senderId, text) {
 const GITHUB_ASSETS = "https://raw.githubusercontent.com/osteopatajoaquinadi-byte/OsteoJuaco/main/assets";
 
 const LEAD_MAGNETS = {
+  "me pasa": {
+    images: [],
+    pdf: null,
+    commentReply: "¡Te escribo al DM! 📩",
+    dmText: "¿Sientes que vives en alerta, como si tu cuerpo no lograra \"apagar\" el motor? 🌙\n\nLo que probablemente pasa es que tu sistema nervioso se quedó en modo defensa. Ante estrés sostenido —trabajo, preocupaciones, mal dormir— la rama simpática (la del \"acelerador\") se mantiene activada más tiempo del que debería. El cuerpo interpreta que sigue habiendo una amenaza, aunque no la haya, y no baja a modo reparación.\n\nPor eso cuesta relajarse, dormir profundo o sentir calma real: el sistema quedó \"trabado\" en alerta.\n\nEste es justamente el eje que trabajamos en el Método R.E.S.T. Si quieres entender cómo empezar a regularlo → www.metodorest.cl",
+    dmFollowUp: null,
+  },
   dormir: {
     images: [`${GITHUB_ASSETS}/dormir/dormir_guia.jpg`],
     pdf: null,
