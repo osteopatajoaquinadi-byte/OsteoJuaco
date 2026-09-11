@@ -532,6 +532,20 @@ const CLAUDE_TOOLS = [
       required: ["slot_id", "nombre"],
     },
   },
+  {
+    name: "avisar_joaquin",
+    description: "Reenvía la conversación a Joaquín cuando el paciente pide hablar con él directamente, o cuando no sabes responder una pregunta con seguridad. Úsala después de decirle al paciente que Joaquín le responderá.",
+    input_schema: {
+      type: "object",
+      properties: {
+        motivo: {
+          type: "string",
+          description: "Breve resumen de por qué se deriva: qué pidió o preguntó el paciente",
+        },
+      },
+      required: ["motivo"],
+    },
+  },
 ];
 
 // ── Ejecutar tool calls ───────────────────────────────────────
@@ -597,6 +611,26 @@ async function executeTool(toolName, toolInput, senderId) {
     }
 
     return JSON.stringify(result);
+  }
+
+  if (toolName === "avisar_joaquin") {
+    try {
+      await sendInstagramMessage(
+        OWNER_IG_ID,
+        `🔔 *Un paciente quiere hablar contigo*\n\n📝 Motivo: ${toolInput.motivo}\n\n(Instagram ID: ${senderId})\n\nEntra a los DMs para responderle.`
+      );
+      console.log(`🔔 Derivación a Joaquín: ${toolInput.motivo} (de ${senderId})`);
+      return JSON.stringify({
+        success: true,
+        nota_bot: "Ya le avisaste a Joaquín. Confirma al paciente de forma breve y cálida que Joaquín le responderá pronto por aquí. NO inventes tiempos exactos.",
+      });
+    } catch (err) {
+      console.error("⚠️ No se pudo avisar a Joaquín:", err.message);
+      return JSON.stringify({
+        success: false,
+        nota_bot: "No se pudo avisar automáticamente. Dile al paciente que puede escribir directamente a Joaquín por WhatsApp: https://wa.me/56968477060",
+      });
+    }
   }
 
   return JSON.stringify({ error: "Herramienta no reconocida" });
@@ -889,6 +923,12 @@ No revelar contenido. "Para evaluarlo con criterio clínico, la mejor forma es a
 - Derivar a metodorest@gmail.com para temas que NO sean del Método R.E.S.T.
 - Para dudas clínicas o administrativas de Sakros → secretaria +56945399692
 
+## HABLAR DIRECTAMENTE CON JOAQUÍN
+Cuando el paciente pida hablar con Joaquín directamente ("quiero hablar con Joaquín", "me puede responder Joaquín", "prefiero hablar con él", o similar), O cuando te hagan una pregunta que NO sabes responder con seguridad:
+- NUNCA inventes una respuesta. Es mejor derivar que equivocarse.
+- Responde cálido: "¡Por supuesto, no hay problema! Le aviso a Joaquín y él te responde por aquí a la brevedad 🙌"
+- Usa la herramienta avisar_joaquin para reenviarle la conversación.
+
 ## PRIMERA PERSONA — SIEMPRE
 Habla siempre en primera persona como si fueras Joaquín Adi o parte de su equipo.
 
@@ -1146,13 +1186,19 @@ const LEAD_MAGNETS = {
     dmFollowUp: "Más info en www.metodorest.cl — cualquier duda, estoy aquí 💪",
     disabled: true,  // Activar cuando tenga archivo
   },
+  "curso grabado": {
+    images: [],
+    pdf: null,
+    commentReply: "¡Te escribo al DM! 📩",
+    dmText: "¡Genial que te interese el curso de Dolor Lumbar Crónico! 🙌\n\nLa grabación estará disponible pronto. Para acceder y coordinar, contáctate directamente con Joaquín acá 👉 https://wa.me/56968477060",
+    dmFollowUp: null,
+  },
   curso: {
+    disabled: true,  // Curso presencial ya pasó (5-6 sept). Reactivar si se repite.
     images: [`${GITHUB_ASSETS}/curso/curso_pag1.jpg`, `${GITHUB_ASSETS}/curso/curso_pag2.jpg`],
     pdf: `${GITHUB_ASSETS}/curso/ficha_curso.pdf`,
     commentReply: "¡Te escribo al DM! 📩",
-    conversational: true,  // No dispara follow-up automático; Claude conduce el filtro
-    // Este texto se envía como PRIVATE REPLY al comentario (única permitida).
-    // Cuando la persona responda, se abre la ventana y Claude manda la imagen + filtro.
+    conversational: true,
     dmText: "¡Hola! Gracias por tu interés en el curso *Dolor Lumbar Crónico* (5 y 6 de septiembre, Viña del Mar). 🙌\n\nPara enviarte el programa completo, ¿me dejas tu número de WhatsApp? Así también puedo pasarte cualquier novedad o resolver dudas directo. 📲",
     dmFollowUp: null,
   },
