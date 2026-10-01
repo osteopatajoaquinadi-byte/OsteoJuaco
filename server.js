@@ -38,7 +38,8 @@ const WIX_SERVICES = {
 
 // ── Método R.E.S.T. acompañado (palabra clave "sueño") ───────
 const REST_ACOMPANADO_PRECIO = "$97.000";
-const REST_PAYMENT_URL = process.env.REST_PAYMENT_URL || "";
+// Link de pago Mercado Pago del programa acompañado (se puede sobreescribir con REST_PAYMENT_URL)
+const REST_PAYMENT_URL = process.env.REST_PAYMENT_URL || "https://mpago.la/2hyPNh4";
 
 // ── Calendario nuevo de Sakros (Supabase) ────────────────────
 // Cada reserva que hace el bot en Wix también se registra en el calendario
