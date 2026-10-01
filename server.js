@@ -23,6 +23,7 @@ const SERVICE_LABELS = {
   osteopatia:   "Osteopatía",
   posturologia: "Posturología Clínica",
   motion:       "Motion and Balance",
+  rest:         "Método R.E.S.T. acompañado (sesión online)",
 };
 
 const WIX_SERVICES = {
@@ -30,7 +31,31 @@ const WIX_SERVICES = {
   osteopatia:   process.env.WIX_SERVICE_OSTEOPATIA,
   posturologia: process.env.WIX_SERVICE_POSTUROLOGIA,
   motion:       process.env.WIX_SERVICE_MOTION,
+  // Sesión online del Método R.E.S.T. acompañado. Si no existe un servicio
+  // propio en Wix, se usan los horarios de Osteopatía de Joaquín.
+  rest:         process.env.WIX_SERVICE_REST || process.env.WIX_SERVICE_OSTEOPATIA,
 };
+
+// ── Método R.E.S.T. acompañado (palabra clave "sueño") ───────
+const REST_ACOMPANADO_PRECIO = "$97.000";
+// Link de pago Mercado Pago del programa acompañado (se puede sobreescribir con REST_PAYMENT_URL)
+const REST_PAYMENT_URL = process.env.REST_PAYMENT_URL || "https://mpago.la/2hyPNh4";
+
+// Pago online por servicio (Mercado Pago). Se incluye en el comprobante.
+const PAYMENT_LINKS = {
+  osteopatia: "https://mpago.la/2tDadem", // sesión unitaria
+};
+
+// Programa de 5 sesiones de osteopatía. Sin link propio aún: se deriva a la
+// secretaria para comprarlo.
+const OSTEO_PACK = { nombre: "Programa de 5 sesiones de osteopatía", precio: "$185.000", vigencia: "6 meses", link: "" };
+
+// ── Calendario nuevo de Sakros (Supabase) ────────────────────
+// Cada reserva que hace el bot en Wix también se registra en el calendario
+// nuevo de sakros.cl, y no se ofrecen horas que ya estén ocupadas allí.
+// Si faltan estas variables, el bot trabaja solo con Wix como antes.
+const SAKROS_SUPABASE_URL = process.env.SAKROS_SUPABASE_URL;
+const SAKROS_SUPABASE_KEY = process.env.SAKROS_SUPABASE_SERVICE_KEY;
 
 // ── Memoria de conversaciones ─────────────────────────────────
 const conversations = {};
@@ -85,8 +110,10 @@ async function getAvailableSlots(serviceId, serviceKey) {
     );
 
     const timeZone = response.data?.timeZone || "America/Santiago";
-    const slots = (response.data?.timeSlots || response.data?.availabilityEntries || [])
+    const wixSlots = (response.data?.timeSlots || response.data?.availabilityEntries || [])
       .filter(s => s.bookable !== false);
+    // Descarta horas ya ocupadas en el calendario nuevo de Sakros
+    const slots = await filterBySakros(serviceKey, wixSlots);
 
     console.log(`📅 Slots crudos recibidos: ${slots.length} (tz=${timeZone})`);
 
@@ -441,11 +468,17 @@ async function createWixBooking(slotId, name, email, phone) {
       if (confirmed) status = confirmed;
     }
 
+    // Copia en el calendario nuevo de Sakros (no bloquea si falla)
+    await createSakrosBooking(serviceKey, slot, name, email, phone, bookingId);
+
     const detalle = {
       servicio: SERVICE_LABELS[serviceKey] || serviceKey,
       fecha: formatSlotDate(slot.startDate),
-      direccion: location.formattedAddress || "Clínica Sakros, Viña del Mar",
+      direccion: serviceKey === "rest"
+        ? "Online — te enviaremos el link de la videollamada"
+        : (location.formattedAddress || "Clínica Sakros, Viña del Mar"),
       paciente: name,
+      serviceKey,
     };
 
     if (status === "CONFIRMED") {
@@ -489,6 +522,127 @@ function formatSlotDate(isoDate) {
   return `${days[d.getDay()]} ${d.getDate()} de ${months[d.getMonth()]} a las ${d.getHours().toString().padStart(2,"0")}:${d.getMinutes().toString().padStart(2,"0")}`;
 }
 
+// ── Calendario nuevo de Sakros (Supabase REST) ───────────────
+const sakrosEnabled = () => Boolean(SAKROS_SUPABASE_URL && SAKROS_SUPABASE_KEY);
+const sakrosHeaders = () => ({
+  apikey: SAKROS_SUPABASE_KEY,
+  Authorization: `Bearer ${SAKROS_SUPABASE_KEY}`,
+  "Content-Type": "application/json",
+});
+
+// Servicio y profesional del calendario nuevo para cada servicio de Wix.
+// Kinesiología: mañana Anikken, desde las 17:00 Camilo (igual que la agenda).
+function sakrosTarget(serviceKey, localStart) {
+  const hour = Number(String(localStart || "").slice(11, 13));
+  switch (serviceKey) {
+    case "osteopatia":   return { service: "osteopatia", pro: "joaquin" };
+    case "posturologia": return { service: "posturologia", pro: "anikken" };
+    case "motion":       return { service: "estudio-biomecanico", pro: "edison" };
+    case "rest":         return { service: "metodo-rest", pro: "joaquin" };
+    case "kinesiologia": return { service: "kinesiologia", pro: hour >= 17 ? "camilo" : "anikken" };
+    default:             return null;
+  }
+}
+
+let sakrosIds = null;
+let sakrosIdsTime = 0;
+async function getSakrosIds() {
+  if (sakrosIds && Date.now() - sakrosIdsTime < 3600000) return sakrosIds;
+  const base = `${SAKROS_SUPABASE_URL}/rest/v1`;
+  const [pros, svcs] = await Promise.all([
+    axios.get(`${base}/professionals?select=id,slug`, { headers: sakrosHeaders() }),
+    axios.get(`${base}/services?select=id,slug`, { headers: sakrosHeaders() }),
+  ]);
+  sakrosIds = {
+    pro: Object.fromEntries(pros.data.map(p => [p.slug, p.id])),
+    service: Object.fromEntries(svcs.data.map(s => [s.slug, s.id])),
+  };
+  sakrosIdsTime = Date.now();
+  return sakrosIds;
+}
+
+const toMin = (t) => { const [h, m] = String(t).slice(0, 5).split(":").map(Number); return h * 60 + m; };
+
+// Reservas no canceladas del calendario nuevo entre dos fechas (YYYY-MM-DD).
+async function getSakrosBusy(fromDate, toDate) {
+  const { data } = await axios.get(
+    `${SAKROS_SUPABASE_URL}/rest/v1/bookings?select=professional_id,booking_date,start_time,end_time` +
+      `&status=neq.cancelled&booking_date=gte.${fromDate}&booking_date=lte.${toDate}`,
+    { headers: sakrosHeaders() }
+  );
+  return data || [];
+}
+
+// Quita los slots de Wix que chocan con una reserva del calendario nuevo.
+async function filterBySakros(serviceKey, slots) {
+  if (!sakrosEnabled() || slots.length === 0) return slots;
+  try {
+    const ids = await getSakrosIds();
+    const dates = slots.map(s => String(s.localStartDate).slice(0, 10)).sort();
+    const busy = await getSakrosBusy(dates[0], dates[dates.length - 1]);
+    return slots.filter(s => {
+      const target = sakrosTarget(serviceKey, s.localStartDate);
+      const proId = target && ids.pro[target.pro];
+      if (!proId) return true;
+      const date = String(s.localStartDate).slice(0, 10);
+      const start = toMin(String(s.localStartDate).slice(11, 16));
+      const end = s.localEndDate ? toMin(String(s.localEndDate).slice(11, 16)) : start + 60;
+      return !busy.some(b =>
+        b.professional_id === proId && b.booking_date === date &&
+        toMin(b.start_time) < end && (b.end_time ? toMin(b.end_time) : toMin(b.start_time) + 60) > start
+      );
+    });
+  } catch (err) {
+    console.error("⚠️ No se pudo consultar el calendario nuevo:", err.response?.status, err.message);
+    return slots; // si falla, se sigue solo con Wix
+  }
+}
+
+// Registra en el calendario nuevo una reserva ya creada en Wix.
+// La ficha del paciente la crea/vincula el trigger de la base de datos.
+async function createSakrosBooking(serviceKey, slot, name, email, phone, wixBookingId) {
+  if (!sakrosEnabled()) return null;
+  try {
+    const target = sakrosTarget(serviceKey, slot.startDate);
+    const ids = await getSakrosIds();
+    const proId = target && ids.pro[target.pro];
+    const serviceId = target && ids.service[target.service];
+    if (!proId || !serviceId) {
+      console.error(`⚠️ Sin mapeo en el calendario nuevo para ${serviceKey}`);
+      return null;
+    }
+    const startTime = String(slot.startDate).slice(11, 16);
+    const endTime = slot.endDate ? String(slot.endDate).slice(11, 16) : null;
+    const { data } = await axios.post(
+      `${SAKROS_SUPABASE_URL}/rest/v1/bookings`,
+      {
+        professional_id: proId,
+        service_id: serviceId,
+        booking_date: String(slot.startDate).slice(0, 10),
+        start_time: startTime,
+        end_time: endTime || `${String(Math.floor(toMin(startTime) / 60) + 1).padStart(2, "0")}:${startTime.slice(3)}`,
+        client_name: name,
+        client_email: email || "",
+        client_phone: phone || null,
+        status: "confirmed",
+        payment_status: "pending",
+        notes: [
+          serviceKey === "rest" ? "Método R.E.S.T. acompañado" : null,
+          "Agendado por OsteoJuaco (Instagram)",
+          wixBookingId ? `Wix: ${wixBookingId}` : null,
+        ].filter(Boolean).join(" · "),
+      },
+      { headers: { ...sakrosHeaders(), Prefer: "return=representation" } }
+    );
+    const id = data?.[0]?.id || null;
+    console.log(`🗓️ Reserva registrada en el calendario nuevo: ${id}`);
+    return id;
+  } catch (err) {
+    console.error("⚠️ No se pudo registrar en el calendario nuevo:", err.response?.status, JSON.stringify(err.response?.data || err.message));
+    return null;
+  }
+}
+
 // ── Tools para Claude ─────────────────────────────────────────
 const CLAUDE_TOOLS = [
   {
@@ -499,8 +653,8 @@ const CLAUDE_TOOLS = [
       properties: {
         servicio: {
           type: "string",
-          enum: ["kinesiologia", "osteopatia", "posturologia", "motion"],
-          description: "El servicio clínico a consultar: kinesiologia (lesiones musculoesqueléticas, esguinces, tendinopatías), osteopatia (dolor crónico, fibromialgia, columna, bruxismo, problemas digestivos), posturologia (postura, déficit atencional, TEA, problemas visuales funcionales, niños), motion (alteraciones de marcha, dolor de pie, plantillas)",
+          enum: ["kinesiologia", "osteopatia", "posturologia", "motion", "rest"],
+          description: "El servicio a consultar: rest (sesión online del Método R.E.S.T. acompañado — SOLO cuando la persona ya aceptó entrar al programa acompañado de $97.000), kinesiologia (lesiones musculoesqueléticas, esguinces, tendinopatías), osteopatia (dolor crónico, fibromialgia, columna, bruxismo, problemas digestivos), posturologia (postura, déficit atencional, TEA, problemas visuales funcionales, niños), motion (alteraciones de marcha, dolor de pie, plantillas)",
         },
       },
       required: ["servicio"],
@@ -597,6 +751,12 @@ async function executeTool(toolName, toolInput, senderId) {
         `📅 *Fecha:* ${d.fecha}`,
         `📍 *Dirección:* ${d.direccion}`,
         `👤 *A nombre de:* ${d.paciente}`,
+        ...(d.serviceKey === "rest" && REST_PAYMENT_URL
+          ? ["", `💳 *Pago del programa (${REST_ACOMPANADO_PRECIO}):* ${REST_PAYMENT_URL}`]
+          : []),
+        ...(d.serviceKey !== "rest" && PAYMENT_LINKS[d.serviceKey]
+          ? ["", `💳 *Paga online aquí:* ${PAYMENT_LINKS[d.serviceKey]} (o en la clínica)`]
+          : []),
         "",
         cierre,
       ].join("\n");
@@ -741,6 +901,28 @@ Director de Clínica Sakros en Viña del Mar, Chile.
 3. Sistema nervioso autónomo — activación vagal, regulación simpática
 4. Timing ultradiano — ciclos de 90 min y eficiencia del sueño
 
+## MÉTODO R.E.S.T. ACOMPAÑADO — PALABRA CLAVE "SUEÑO"
+Cuando la persona escribe la palabra "sueño" (o "sueños", con o sin tilde), o viene de un comentario con esa palabra (en ese caso ya le enviaste la presentación del programa y está en el historial), estás en este flujo. Es DISTINTO del Método R.E.S.T. digital de $39.990 que se compra en www.metodorest.cl: aquí ofreces el programa ACOMPAÑADO.
+
+DATOS DEL PROGRAMA ACOMPAÑADO:
+- Incluye 1 sesión online con Joaquín + seguimiento por WhatsApp durante 21 días, con respuesta 1 vez al día en horario laboral.
+- Todas las preguntas del seguimiento deben hacerse en horario laboral.
+- Valor: ${REST_ACOMPANADO_PRECIO} CLP. Se paga con un link de pago.
+- Link de pago: ${REST_PAYMENT_URL || "(aún no disponible: dile que se lo enviaremos en breve y usa avisar_joaquin para que Joaquín se lo mande)"}
+
+PASOS (en este orden):
+1. Si escribió "sueño" y aún no le explicaste el programa: preséntate en una línea (si es tu primer mensaje), explica brevemente qué incluye (sesión online + 21 días de WhatsApp con respuesta 1 vez al día en horario laboral, preguntas en horario laboral) y el valor, y pregúntale si le gustaría entrar.
+2. Si acepta: envíale el link de pago SOLO en este momento (nunca antes de que acepte) y dile que ahora agendaremos su sesión online.
+3. Usa consultar_disponibilidad con servicio "rest" y muéstrale los horarios disponibles.
+4. Pídele nombre completo, correo electrónico y número de WhatsApp. Para este programa los TRES son obligatorios (el WhatsApp es para el seguimiento).
+5. Cuando elija un horario y tengas los tres datos, usa crear_reserva con el slot_id exacto.
+6. Si no acepta: agradece con calidez, sin insistir. Si pregunta por algo más económico, puedes mencionar el Método R.E.S.T. digital en www.metodorest.cl.
+
+REGLAS DEL FLUJO SUEÑO:
+- La sesión es ONLINE: no le des la dirección de la clínica.
+- La regla general de "derivar siempre a www.metodorest.cl" NO aplica a este flujo: quien aceptó el programa acompañado paga con el link de pago de arriba.
+- Respeta el límite de 60 palabras salvo en el mensaje que explica el programa.
+
 ## FLUJO DEL CURSO "DOLOR LUMBAR CRÓNICO" (gancho profesional)
 Cuando una persona escribe interesada en el curso (o ya recibió el mensaje de bienvenida del curso), estás en un flujo especial dirigido a PROFESIONALES DE LA SALUD. Sigue este guion:
 
@@ -811,6 +993,8 @@ Tienes acceso a dos herramientas para gestionar citas reales en Clínica Sakros 
 Derivar cuando mencione: esguinces, lesiones de rodilla/hombro, tendinopatías, disquinesias escapulares, epicondilitis, epitrocleítis, túnel carpiano, lesiones de muñeca y mano
 
 ### OSTEOPATÍA
+Pago de la sesión individual: online en ${PAYMENT_LINKS.osteopatia} o en la clínica (el link va en el comprobante de la reserva, no lo repitas salvo que lo pidan).
+También existe el ${OSTEO_PACK.nombre}: ${OSTEO_PACK.precio}, válido por ${OSTEO_PACK.vigencia}. Ofrécelo cuando el paciente pregunte por precios, por varias sesiones o por un tratamiento continuo. ${OSTEO_PACK.link ? `Se paga en ${OSTEO_PACK.link}.` : "Para comprarlo, derivar a la secretaria al +56945399692."}
 Derivar cuando mencione: dolor de columna, dolor persistente (+3 meses), fibromialgia, dolor orofacial, trastornos temporomandibulares, bruxismo, intestino irritable, gastritis, acidez crónica, palpitaciones, sudoraciones, disautonomías
 
 ### MOTION AND BALANCE
@@ -966,7 +1150,7 @@ app.post("/webhook", async (req, res) => {
     for (const change of entry.changes || []) {
       if (change.field === "comments") {
         const comment = change.value;
-        const commentText = (comment.text || "").toLowerCase().trim();
+        const commentText = sinTildes((comment.text || "").toLowerCase().trim());
         const commentId = comment.id;
         const commenterId = comment.from?.id;
         const commenterUsername = comment.from?.username || "unknown";
@@ -978,7 +1162,7 @@ app.post("/webhook", async (req, res) => {
 
         // Buscar keyword de lead magnet
         for (const [keyword, magnet] of Object.entries(LEAD_MAGNETS)) {
-          if (commentText.includes(keyword) && !magnet.disabled) {
+          if (commentText.includes(sinTildes(keyword)) && !magnet.disabled) {
             handleLeadMagnetComment(commentId, commenterId, commenterUsername, keyword).catch(err => {
               console.error(`❌ Error en lead magnet "${keyword}":`, err.message);
             });
@@ -1194,6 +1378,7 @@ const LEAD_MAGNETS = {
     dmFollowUp: null,
   },
   curso: {
+    context: "curso",
     disabled: true,  // Curso presencial ya pasó (5-6 sept). Reactivar si se repite.
     images: [`${GITHUB_ASSETS}/curso/curso_pag1.jpg`, `${GITHUB_ASSETS}/curso/curso_pag2.jpg`],
     pdf: `${GITHUB_ASSETS}/curso/ficha_curso.pdf`,
@@ -1202,6 +1387,30 @@ const LEAD_MAGNETS = {
     dmText: "¡Hola! Gracias por tu interés en el curso *Dolor Lumbar Crónico* (5 y 6 de septiembre, Viña del Mar). 🙌\n\nPara enviarte el programa completo, ¿me dejas tu número de WhatsApp? Así también puedo pasarte cualquier novedad o resolver dudas directo. 📲",
     dmFollowUp: null,
   },
+};
+
+// Quita tildes para comparar palabras clave ("sueño" = "sueno")
+function sinTildes(texto) {
+  return texto.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+// "sueño" va al final: si un comentario coincide con otra palabra clave
+// (por ejemplo "errores"), se mantiene ese lead magnet.
+LEAD_MAGNETS["sueño"] = {
+  images: [],
+  pdf: null,
+  commentReply: "¡Te escribo al DM! 🌙",
+  conversational: true,
+  context: "rest",
+  dmText:
+    "¡Hola! Soy OsteoJuaco, asistente de Joaquín Adi 🌙\n\n" +
+    "Te cuento del Método R.E.S.T. acompañado:\n" +
+    "• 1 sesión online con Joaquín\n" +
+    "• 21 días de seguimiento por WhatsApp, con respuesta 1 vez al día en horario laboral\n\n" +
+    "Las preguntas del seguimiento se hacen en horario laboral. " +
+    `El programa cuesta ${REST_ACOMPANADO_PRECIO} y se paga con un link de pago.\n\n` +
+    "¿Te gustaría entrar al programa? 🙌",
+  dmFollowUp: null,
 };
 
 // Registro para evitar enviar lead magnets duplicados al mismo usuario
@@ -1330,8 +1539,12 @@ async function handleLeadMagnetComment(commentId, commenterId, commenterUsername
       role: "assistant",
       content: magnet.dmText,
     });
-    cursoContext[commenterId] = Date.now();
-    console.log(`🎓 Modo curso activado para @${commenterUsername} — Claude conduce el filtro`);
+    if (magnet.context === "curso") {
+      cursoContext[commenterId] = Date.now();
+      console.log(`🎓 Modo curso activado para @${commenterUsername} — Claude conduce el filtro`);
+    } else {
+      console.log(`🌙 Flujo "${keyword}" activado para @${commenterUsername} — Claude continúa la conversación`);
+    }
   }
 
   console.log(`✅ Lead magnet "${keyword}" completo para @${commenterUsername}`);
