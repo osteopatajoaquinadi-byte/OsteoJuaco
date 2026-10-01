@@ -46,9 +46,8 @@ const PAYMENT_LINKS = {
   osteopatia: "https://mpago.la/2tDadem", // sesión unitaria
 };
 
-// Programa de 5 sesiones de osteopatía. Sin link propio aún: se deriva a la
-// secretaria para comprarlo.
-const OSTEO_PACK = { nombre: "Programa de 5 sesiones de osteopatía", precio: "$185.000", vigencia: "6 meses", link: "" };
+// Programa de 5 sesiones de osteopatía (pago con Mercado Pago).
+const OSTEO_PACK = { nombre: "Programa de 5 sesiones de osteopatía", precio: "$185.000", vigencia: "6 meses", link: "https://mpago.la/1idmHEA" };
 
 // ── Calendario nuevo de Sakros (Supabase) ────────────────────
 // Cada reserva que hace el bot en Wix también se registra en el calendario
