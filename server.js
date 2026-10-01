@@ -41,6 +41,15 @@ const REST_ACOMPANADO_PRECIO = "$97.000";
 // Link de pago Mercado Pago del programa acompañado (se puede sobreescribir con REST_PAYMENT_URL)
 const REST_PAYMENT_URL = process.env.REST_PAYMENT_URL || "https://mpago.la/2hyPNh4";
 
+// Pago online por servicio (Mercado Pago). Se incluye en el comprobante.
+const PAYMENT_LINKS = {
+  osteopatia: "https://mpago.la/2tDadem", // sesión unitaria
+};
+
+// Programa de 5 sesiones de osteopatía. Sin link propio aún: se deriva a la
+// secretaria para comprarlo.
+const OSTEO_PACK = { nombre: "Programa de 5 sesiones de osteopatía", precio: "$185.000", vigencia: "6 meses", link: "" };
+
 // ── Calendario nuevo de Sakros (Supabase) ────────────────────
 // Cada reserva que hace el bot en Wix también se registra en el calendario
 // nuevo de sakros.cl, y no se ofrecen horas que ya estén ocupadas allí.
@@ -745,6 +754,9 @@ async function executeTool(toolName, toolInput, senderId) {
         ...(d.serviceKey === "rest" && REST_PAYMENT_URL
           ? ["", `💳 *Pago del programa (${REST_ACOMPANADO_PRECIO}):* ${REST_PAYMENT_URL}`]
           : []),
+        ...(d.serviceKey !== "rest" && PAYMENT_LINKS[d.serviceKey]
+          ? ["", `💳 *Paga online aquí:* ${PAYMENT_LINKS[d.serviceKey]} (o en la clínica)`]
+          : []),
         "",
         cierre,
       ].join("\n");
@@ -981,6 +993,8 @@ Tienes acceso a dos herramientas para gestionar citas reales en Clínica Sakros 
 Derivar cuando mencione: esguinces, lesiones de rodilla/hombro, tendinopatías, disquinesias escapulares, epicondilitis, epitrocleítis, túnel carpiano, lesiones de muñeca y mano
 
 ### OSTEOPATÍA
+Pago de la sesión individual: online en ${PAYMENT_LINKS.osteopatia} o en la clínica (el link va en el comprobante de la reserva, no lo repitas salvo que lo pidan).
+También existe el ${OSTEO_PACK.nombre}: ${OSTEO_PACK.precio}, válido por ${OSTEO_PACK.vigencia}. Ofrécelo cuando el paciente pregunte por precios, por varias sesiones o por un tratamiento continuo. ${OSTEO_PACK.link ? `Se paga en ${OSTEO_PACK.link}.` : "Para comprarlo, derivar a la secretaria al +56945399692."}
 Derivar cuando mencione: dolor de columna, dolor persistente (+3 meses), fibromialgia, dolor orofacial, trastornos temporomandibulares, bruxismo, intestino irritable, gastritis, acidez crónica, palpitaciones, sudoraciones, disautonomías
 
 ### MOTION AND BALANCE
