@@ -59,6 +59,50 @@ const SAKROS_SUPABASE_KEY = process.env.SAKROS_SUPABASE_SERVICE_KEY;
 // ── Memoria de conversaciones ─────────────────────────────────
 const conversations = {};
 
+// ── Pausa cuando Joaquín responde a mano ──────────────────────
+// Si Joaquín escribe él mismo en un DM (desde la app de Instagram), el bot deja
+// de responder a esa persona durante 12 horas para no cruzarse con él.
+// Instagram avisa cada mensaje que sale de la cuenta como "eco". Los que mandó
+// el bot se reconocen por su message_id, por su texto o (imágenes) porque el
+// bot acaba de enviar una. El eco puede llegar antes que la respuesta de la
+// API, así que se revisa unos segundos después.
+const PAUSA_MANUAL_MS = 12 * 60 * 60 * 1000;
+const ESPERA_ECO_MS = 8000;
+const RECIENTE_MS = 10 * 60 * 1000;
+const pausedUntil = {};
+const botMessageIds = new Set();
+const botTextosRecientes = new Map(); // texto → cuándo lo envió el bot
+let ultimaImagenBot = 0;
+
+function registrarEnvioBot(response, { texto, imagen } = {}) {
+  const ahora = Date.now();
+  const mid = response?.data?.message_id;
+  if (mid) {
+    botMessageIds.add(mid);
+    // Que el registro no crezca sin límite
+    if (botMessageIds.size > 5000) botMessageIds.delete(botMessageIds.values().next().value);
+  }
+  if (texto) botTextosRecientes.set(texto.trim(), ahora);
+  if (imagen) ultimaImagenBot = ahora;
+  for (const [t, cuando] of botTextosRecientes) {
+    if (ahora - cuando > RECIENTE_MS) botTextosRecientes.delete(t);
+  }
+}
+
+function ecoEsDelBot(message) {
+  if (message.mid && botMessageIds.has(message.mid)) return true;
+  if (message.text && botTextosRecientes.has(message.text.trim())) return true;
+  if (!message.text && message.attachments && Date.now() - ultimaImagenBot < 60000) return true;
+  return false;
+}
+
+function botPausado(userId) {
+  if (!pausedUntil[userId]) return false;
+  if (Date.now() < pausedUntil[userId]) return true;
+  delete pausedUntil[userId];
+  return false;
+}
+
 // ── Headers Wix ───────────────────────────────────────────────
 const wixHeaders = {
   "Authorization": WIX_API_KEY,
@@ -1161,7 +1205,7 @@ app.post("/webhook", async (req, res) => {
 
         // Buscar keyword de lead magnet
         for (const [keyword, magnet] of Object.entries(LEAD_MAGNETS)) {
-          if (commentText.includes(sinTildes(keyword)) && !magnet.disabled) {
+          if (coincideKeyword(commentText, keyword, magnet) && !magnet.disabled) {
             handleLeadMagnetComment(commentId, commenterId, commenterUsername, keyword).catch(err => {
               console.error(`❌ Error en lead magnet "${keyword}":`, err.message);
             });
@@ -1177,13 +1221,25 @@ app.post("/webhook", async (req, res) => {
       const recipientId = event.recipient?.id;
       const text        = event.message?.text;
 
+      // Ecos: mensajes que salieron de la cuenta (del bot o de Joaquín a mano)
+      const esEco = event.message?.is_echo || (recipientId && recipientId !== INSTAGRAM_ACCOUNT_ID);
+      if (esEco) {
+        const message = event.message;
+        if (message && recipientId) {
+          setTimeout(() => {
+            if (ecoEsDelBot(message)) return;
+            pausedUntil[recipientId] = Date.now() + PAUSA_MANUAL_MS;
+            console.log(`✋ Joaquín respondió a mano a ${recipientId}: bot en pausa 12 h para esta persona`);
+          }, ESPERA_ECO_MS);
+        }
+        continue;
+      }
+
       // Ignorar mensajes sin contenido
       if (!senderId || !text) continue;
 
-      // Ignorar ecos del propio bot
-      if (event.message?.is_echo) continue;
-      if (recipientId && recipientId !== INSTAGRAM_ACCOUNT_ID) {
-        console.log(`🔄 Ignorando eco (recipient=${recipientId}, sender=${senderId})`);
+      if (botPausado(senderId)) {
+        console.log(`⏸️ Bot en pausa para ${senderId} (Joaquín está respondiendo a mano): "${text}"`);
         continue;
       }
 
@@ -1279,7 +1335,7 @@ app.post("/webhook", async (req, res) => {
 //  - Se dirige por comment_id, no por user_id
 //  - Llega a Inbox si te sigue, o a Solicitudes si no te sigue
 async function sendPrivateReply(commentId, text) {
-  await axios.post(
+  const response = await axios.post(
     `https://graph.instagram.com/v25.0/${INSTAGRAM_ACCOUNT_ID}/messages`,
     {
       recipient: { comment_id: commentId },
@@ -1287,6 +1343,7 @@ async function sendPrivateReply(commentId, text) {
     },
     { headers: { Authorization: `Bearer ${PAGE_ACCESS_TOKEN}` } }
   );
+  registrarEnvioBot(response, { texto: text });
   console.log(`📨 Private reply enviada al comentario ${commentId}`);
 }
 
@@ -1315,7 +1372,7 @@ async function sendInstagramMessage(senderId, text) {
   }
 
   for (const part of parts) {
-    await axios.post(
+    const response = await axios.post(
       `https://graph.instagram.com/v25.0/${INSTAGRAM_ACCOUNT_ID}/messages`,
       {
         recipient: { id: senderId },
@@ -1325,6 +1382,7 @@ async function sendInstagramMessage(senderId, text) {
         headers: { Authorization: `Bearer ${PAGE_ACCESS_TOKEN}` },
       }
     );
+    registrarEnvioBot(response, { texto: part });
   }
   console.log(`✅ Respuesta enviada a ${senderId} (${parts.length} parte${parts.length > 1 ? "s" : ""})`);
 }
@@ -1369,6 +1427,24 @@ const LEAD_MAGNETS = {
     dmFollowUp: "Más info en www.metodorest.cl — cualquier duda, estoy aquí 💪",
     disabled: true,  // Activar cuando tenga archivo
   },
+  // DOLOR y KINE: CTA de los posts de @osteopatajoaquinadi. Solo cuentan como
+  // palabra completa, para no saltar con "kinesiólogo" o "dolorido".
+  dolor: {
+    wholeWord: true,
+    images: [],
+    pdf: null,
+    commentReply: "¡Te lo envío al DM! 📩",
+    dmText: "¡Hola! 🙌 Si llevas tiempo con dolor, el primer paso es una buena evaluación: entender qué lo está manteniendo, no solo dónde duele.\n\nPuedes agendar tu evaluación en Clínica Sakros (Viña del Mar) aquí 👉 https://www.sakros.cl/reserva",
+    dmFollowUp: "¿Prefieres coordinar por WhatsApp? Escríbenos al +56 9 4539 9692 📲",
+  },
+  kine: {
+    wholeWord: true,
+    images: [],
+    pdf: null,
+    commentReply: "¡Te lo envío al DM! 📩",
+    dmText: "¡Hola! 💪 Aquí puedes agendar con el equipo de kinesiología de Clínica Sakros (Viña del Mar) 👉 https://www.sakros.cl/reserva",
+    dmFollowUp: "Si no sabes si te conviene kinesiología u osteopatía, respóndeme por aquí y lo vemos. También puedes escribirnos por WhatsApp al +56 9 4539 9692 📲",
+  },
   "curso grabado": {
     images: [],
     pdf: null,
@@ -1391,6 +1467,13 @@ const LEAD_MAGNETS = {
 // Quita tildes para comparar palabras clave ("sueño" = "sueno")
 function sinTildes(texto) {
   return texto.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+// commentText ya viene en minúsculas y sin tildes
+function coincideKeyword(commentText, keyword, magnet) {
+  const k = sinTildes(keyword.toLowerCase());
+  if (!magnet.wholeWord) return commentText.includes(k);
+  return new RegExp(`(^|[^a-z0-9])${k}($|[^a-z0-9])`).test(commentText);
 }
 
 // "sueño" va al final: si un comentario coincide con otra palabra clave
@@ -1456,7 +1539,7 @@ async function replyToComment(commentId, text) {
 // ── Enviar imagen por DM de Instagram ─────────────────────────
 async function sendInstagramImage(recipientId, imageUrl) {
   try {
-    await axios.post(
+    const response = await axios.post(
       `https://graph.instagram.com/v25.0/${INSTAGRAM_ACCOUNT_ID}/messages`,
       {
         recipient: { id: recipientId },
@@ -1469,6 +1552,7 @@ async function sendInstagramImage(recipientId, imageUrl) {
       },
       { headers: { Authorization: `Bearer ${PAGE_ACCESS_TOKEN}` } }
     );
+    registrarEnvioBot(response, { imagen: true });
     console.log(`🖼️ Imagen enviada a ${recipientId}`);
   } catch (error) {
     console.error("❌ Error enviando imagen:", error.response?.status, error.response?.data?.error?.message || error.message);
