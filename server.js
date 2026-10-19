@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────
 // ASISTENTE R.E.S.T. — Servidor puente Instagram ↔ Claude IA
 // © Joaquín Adi A. — Todos los derechos reservados
-// v2.0 — Refactor: Claude tool use para Wix Bookings
+// v3.0 — Agenda de www.sakros.cl (antes Wix Bookings)
 // ─────────────────────────────────────────────────────────────
 
 const express = require("express");
@@ -15,25 +15,27 @@ const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const INSTAGRAM_ACCOUNT_ID = process.env.INSTAGRAM_ACCOUNT_ID;
 
-// ── Variables Wix ─────────────────────────────────────────────
-const WIX_API_KEY  = process.env.WIX_API_KEY;
-const WIX_SITE_ID  = process.env.WIX_SITE_ID;
+// ── Agenda de sakros.cl ───────────────────────────────────────
+// El bot consulta horas y reserva directo en la agenda de www.sakros.cl
+// (la misma de la web y del panel del equipo). Wix ya no se usa.
+const SAKROS_SITE_URL = (process.env.SAKROS_SITE_URL || "https://www.sakros.cl").replace(/\/$/, "");
+
 const SERVICE_LABELS = {
   kinesiologia: "Kinesiología",
   osteopatia:   "Osteopatía",
   posturologia: "Posturología Clínica",
-  motion:       "Motion and Balance",
+  motion:       "Estudio biomecánico del pie",
   rest:         "Método R.E.S.T. acompañado (sesión online)",
 };
 
-const WIX_SERVICES = {
-  kinesiologia: process.env.WIX_SERVICE_KINESIOLOGIA,
-  osteopatia:   process.env.WIX_SERVICE_OSTEOPATIA,
-  posturologia: process.env.WIX_SERVICE_POSTUROLOGIA,
-  motion:       process.env.WIX_SERVICE_MOTION,
-  // Sesión online del Método R.E.S.T. acompañado. Si no existe un servicio
-  // propio en Wix, se usan los horarios de Osteopatía de Joaquín.
-  rest:         process.env.WIX_SERVICE_REST || process.env.WIX_SERVICE_OSTEOPATIA,
+// Servicio de sakros.cl cuyos horarios se consultan. El Método R.E.S.T.
+// acompañado usa los horarios de osteopatía de Joaquín.
+const SAKROS_AVAILABILITY = {
+  kinesiologia: "kinesiologia",
+  osteopatia:   "osteopatia",
+  posturologia: "posturologia",
+  motion:       "estudio-biomecanico",
+  rest:         "osteopatia",
 };
 
 // ── Método R.E.S.T. acompañado (palabra clave "sueño") ───────
@@ -49,10 +51,9 @@ const PAYMENT_LINKS = {
 // Programa de 5 sesiones de osteopatía (pago con Mercado Pago).
 const OSTEO_PACK = { nombre: "Programa de 5 sesiones de osteopatía", precio: "$185.000", vigencia: "6 meses", link: "https://mpago.la/1idmHEA" };
 
-// ── Calendario nuevo de Sakros (Supabase) ────────────────────
-// Cada reserva que hace el bot en Wix también se registra en el calendario
-// nuevo de sakros.cl, y no se ofrecen horas que ya estén ocupadas allí.
-// Si faltan estas variables, el bot trabaja solo con Wix como antes.
+// ── Base de datos de Sakros (opcional) ───────────────────────
+// Solo se usa para reservar cuando el paciente no da email (la reserva web
+// lo exige) y para encontrar el servicio del Método R.E.S.T.
 const SAKROS_SUPABASE_URL = process.env.SAKROS_SUPABASE_URL;
 const SAKROS_SUPABASE_KEY = process.env.SAKROS_SUPABASE_SERVICE_KEY;
 
@@ -103,26 +104,11 @@ function botPausado(userId) {
   return false;
 }
 
-// ── Headers Wix ───────────────────────────────────────────────
-const wixHeaders = {
-  "Authorization": WIX_API_KEY,
-  "wix-site-id":   WIX_SITE_ID,
-  "Content-Type":  "application/json",
-};
-
-// ── Obtener horarios disponibles de Wix ──────────────────────
-// Caché de slots CRUDOS. Clave: slot_id que ve Claude. Valor: objeto slot tal cual
-// lo devolvió Wix + la zona horaria de la respuesta. Esto evita que Claude reconstruya
-// fechas a mano (causa histórica de SLOT_NOT_AVAILABLE).
+// ── Horarios disponibles en sakros.cl ─────────────────────────
+// Caché de horas ofrecidas. Clave: slot_id que ve Claude. Así Claude nunca
+// reconstruye fechas a mano: reserva exactamente la hora que mostró.
 const slotCache = {};
 
-function cacheSlot(serviceKey, index, rawSlot, timeZone) {
-  const id = `${serviceKey}_${index}`;
-  slotCache[id] = { rawSlot, timeZone, serviceKey, cachedAt: Date.now() };
-  return id;
-}
-
-// Limpia slots cacheados de más de 2 horas
 function purgeSlotCache() {
   const cutoff = Date.now() - 2 * 60 * 60 * 1000;
   for (const [id, entry] of Object.entries(slotCache)) {
@@ -130,284 +116,71 @@ function purgeSlotCache() {
   }
 }
 
-async function getAvailableSlots(serviceId, serviceKey) {
+// Fecha YYYY-MM-DD en Chile, desplazada `days` días.
+function chileDate(days = 0) {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santiago" }).format(new Date());
+  const d = new Date(`${today}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+const MAX_SLOTS = 6;
+const MAX_POR_DIA = 2; // para ofrecer días distintos
+
+async function getAvailableSlots(serviceKey) {
+  const slug = SAKROS_AVAILABILITY[serviceKey];
+  if (!slug) return { error: `Servicio "${serviceKey}" no encontrado` };
   try {
     purgeSlotCache();
-
-    const now = new Date();
-    // Wix Time Slots V2 usa fechas locales + timeZone (no ISO UTC)
-    const fromLocal = now.toISOString().split(".")[0];
-    const toDate = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
-    const toLocal = toDate.toISOString().split(".")[0];
-
-    const response = await axios.post(
-      "https://www.wixapis.com/_api/service-availability/v2/time-slots",
-      {
-        serviceId: serviceId,
-        fromLocalDate: fromLocal,
-        toLocalDate: toLocal,
-        timeZone: "America/Santiago",
-        bookable: true,
-      },
-      { headers: wixHeaders }
-    );
-
-    const timeZone = response.data?.timeZone || "America/Santiago";
-    const wixSlots = (response.data?.timeSlots || response.data?.availabilityEntries || [])
-      .filter(s => s.bookable !== false);
-    // Descarta horas ya ocupadas en el calendario nuevo de Sakros
-    const slots = await filterBySakros(serviceKey, wixSlots);
-
-    console.log(`📅 Slots crudos recibidos: ${slots.length} (tz=${timeZone})`);
-
-    const shown = slots.slice(0, 6);
-    return shown.map((raw, i) => {
-      const id = cacheSlot(serviceKey, i, raw, timeZone);
-      return {
-        slot_id: id,
-        horario: formatSlotDate(raw.localStartDate),
-      };
+    const from = chileDate(1);
+    const week = await axios.get(`${SAKROS_SITE_URL}/api/week-availability`, {
+      params: { service: slug, weekStart: from, days: 14 },
+      timeout: 15000,
     });
+    const dias = Object.entries(week.data?.available || {})
+      .filter(([, n]) => n > 0)
+      .map(([d]) => d)
+      .sort();
+
+    const ofrecidos = [];
+    for (const date of dias) {
+      if (ofrecidos.length >= MAX_SLOTS) break;
+      const { data } = await axios.get(`${SAKROS_SITE_URL}/api/availability`, {
+        params: { service: slug, date },
+        timeout: 15000,
+      });
+      for (const s of (data?.slots || []).slice(0, MAX_POR_DIA)) {
+        if (ofrecidos.length >= MAX_SLOTS) break;
+        const id = `${serviceKey}_${ofrecidos.length}`;
+        slotCache[id] = {
+          serviceKey,
+          serviceId: data.service?.id,
+          professionalId: s.professional_id,
+          professionalName: s.professional_name,
+          date,
+          time: s.time,
+          cachedAt: Date.now(),
+        };
+        ofrecidos.push({
+          slot_id: id,
+          horario: formatSlotDate(`${date}T${s.time}:00`),
+          profesional: s.professional_name,
+        });
+      }
+    }
+    console.log(`📅 Horas de sakros.cl para ${serviceKey}: ${ofrecidos.length}`);
+    return ofrecidos;
   } catch (error) {
-    console.error("❌ Error Wix slots:", error.response?.status, error.response?.data || error.message);
-    return { error: "No se pudo consultar disponibilidad. Sugiere al paciente agendar en www.sakros.cl" };
+    console.error("❌ Error agenda sakros.cl:", error.response?.status, error.response?.data || error.message);
+    return { error: "No se pudo consultar disponibilidad. Sugiere al paciente agendar en www.sakros.cl/reserva" };
   }
 }
 
-// ── Revalidar/enriquecer un slot con Get Availability Time Slot ───
-// La lista (List Availability Time Slots) NO devuelve availableResources poblado.
-// El endpoint Get sí trae el slot completo con resource, que es obligatorio para reservar.
-async function enrichSlot(serviceId, rawSlot, timeZone) {
-  const candidates = [
-    "https://www.wixapis.com/_api/service-availability/v2/time-slots/get",
-    "https://www.wixapis.com/_api/service-availability/v2/time-slot",
-    "https://www.wixapis.com/bookings/v2/availability/time-slots/get",
-  ];
-
-  for (const url of candidates) {
-    try {
-      const resp = await axios.post(
-        url,
-        {
-          serviceId: serviceId,
-          localStartDate: rawSlot.localStartDate,
-          localEndDate: rawSlot.localEndDate,
-          timeZone: timeZone,
-        },
-        { headers: wixHeaders }
-      );
-      const full = resp.data?.timeSlot || resp.data?.availabilityEntry || resp.data?.slot;
-      if (full) {
-        const res = full.availableResources || [];
-        console.log(`🔎 Slot enriquecido — recursos: ${res.length}`);
-        if (res.length > 0) {
-          console.log("🔍 availableResources[0]:", JSON.stringify(res[0]).slice(0, 600));
-        }
-        return full;
-      }
-    } catch (err) {
-      console.log(`⚠️ Get slot ${url.split("wixapis.com")[1]}: ${err.response?.status || err.message}`);
-    }
-  }
-  console.log("ℹ️ No se pudo enriquecer el slot, se usa el de la lista");
-  return rawSlot;
-}
-
-// ── Caché de recursos (staff) ─────────────────────────────────
-let resourceCache = null;
-let resourceCacheTime = 0;
-
-async function getResourceByScheduleId(scheduleId) {
-  // Cache de 1 hora — los recursos no cambian seguido
-  if (resourceCache && Date.now() - resourceCacheTime < 3600000) {
-    const cached = resourceCache.find(r => r.scheduleIds?.includes(scheduleId) || r.scheduleId === scheduleId);
-    if (cached) return cached.id || cached._id;
-  }
-
-  // Intentar varios endpoints de Resources API (Wix cambia URLs frecuentemente)
-  const endpoints = [
-    "https://www.wixapis.com/_api/bookings-resources/v2/resources/query",
-    "https://www.wixapis.com/bookings/v2/resources/query",
-  ];
-
-  for (const url of endpoints) {
-    try {
-      const response = await axios.post(url, { query: {} }, { headers: wixHeaders });
-      const resources = response.data?.resources || [];
-      console.log(`📋 Resources encontrados (${url.split("/").pop()}):`, resources.length);
-      
-      if (resources.length > 0) {
-        console.log("🔍 Primer resource:", JSON.stringify(resources[0]));
-        resourceCache = resources;
-        resourceCacheTime = Date.now();
-        
-        const match = resources.find(r => 
-          r.scheduleIds?.includes(scheduleId) || 
-          r.scheduleId === scheduleId ||
-          r.schedules?.some(s => s.id === scheduleId || s.scheduleId === scheduleId)
-        );
-        if (match) {
-          console.log(`✅ Resource match: ${match.id || match._id} para scheduleId ${scheduleId}`);
-          return match.id || match._id;
-        }
-      }
-    } catch (err) {
-      console.log(`⚠️ Resources endpoint ${url.split("wixapis.com")[1]} falló:`, err.response?.status || err.message);
-    }
-  }
-
-  // Fallback: intentar listar staff members
-  try {
-    const response = await axios.post(
-      "https://www.wixapis.com/_api/bookings-staff-members/v1/staff-members/query",
-      { query: {} },
-      { headers: wixHeaders }
-    );
-    const staff = response.data?.staffMembers || [];
-    console.log(`📋 Staff members encontrados:`, staff.length);
-    if (staff.length > 0) {
-      console.log("🔍 Primer staff:", JSON.stringify(staff[0]));
-      // Si solo hay un staff member, es el correcto
-      if (staff.length === 1) return staff[0].id || staff[0]._id;
-    }
-  } catch (err) {
-    console.log("⚠️ Staff members endpoint falló:", err.response?.status || err.message);
-  }
-
-  console.log("❌ No se encontró resource para scheduleId:", scheduleId);
-  return null;
-}
-
-// ── Crear reserva en Wix ──────────────────────────────────────
-// ── Extraer el ID de recurso (staff) de la estructura de Wix ──
-// Wix cambia la forma de availableResources entre versiones, así que probamos
-// varias rutas y validamos que sea un GUID real antes de enviarlo.
-const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function extractResourceId(entry) {
-  if (!entry) return null;
-  if (typeof entry === "string") return GUID_RE.test(entry) ? entry : null;
-
-  const candidates = [
-    entry.id,
-    entry._id,
-    entry.resourceId,
-    entry.resourceIds?.[0],
-    entry.resources?.[0]?.id,
-    entry.resources?.[0]?._id,
-    entry.resource?.id,
-    entry.resource?._id,
-  ];
-
-  for (const c of candidates) {
-    if (typeof c === "string" && GUID_RE.test(c)) return c;
-  }
-
-  // Último recurso: buscar recursivamente el primer GUID que no sea un resourceType
-  for (const [key, value] of Object.entries(entry)) {
-    if (/type/i.test(key)) continue;
-    if (typeof value === "string" && GUID_RE.test(value)) return value;
-    if (value && typeof value === "object") {
-      const nested = extractResourceId(value);
-      if (nested) return nested;
-    }
-  }
-  return null;
-}
-
-// ── Buscar o crear el Contacto en el CRM de Wix ───────────────
-// Las automatizaciones de email de Wix Bookings envían al "contacto que disparó
-// la automatización". Una reserva por API sin contactId vinculado no tiene
-// destinatario, por eso no sale el correo de confirmación.
-async function findOrCreateWixContact(name, email, phone) {
-  if (!email && !phone) return null;
-
-  const first = name.split(" ")[0];
-  const last = name.split(" ").slice(1).join(" ") || ".";
-
-  // 1) Buscar contacto existente por email
-  if (email) {
-    try {
-      const resp = await axios.post(
-        "https://www.wixapis.com/contacts/v4/contacts/query",
-        { query: { filter: { "info.emails.email": email } } },
-        { headers: wixHeaders }
-      );
-      const found = resp.data?.contacts?.[0];
-      const id = found?.id || found?._id;
-      if (id) {
-        console.log(`👥 Contacto existente: ${id}`);
-        return id;
-      }
-    } catch (err) {
-      console.log(`⚠️ Query contacto: ${err.response?.status || err.message}`);
-    }
-  }
-
-  // 2) Crear contacto nuevo
-  try {
-    const resp = await axios.post(
-      "https://www.wixapis.com/contacts/v4/contacts",
-      {
-        info: {
-          name: { first, last },
-          ...(email && { emails: { items: [{ email, primary: true }] } }),
-          ...(phone && { phones: { items: [{ phone, primary: true }] } }),
-        },
-      },
-      { headers: wixHeaders }
-    );
-    const id = resp.data?.contact?.id || resp.data?.contact?._id;
-    if (id) {
-      console.log(`👥 Contacto creado: ${id}`);
-      return id;
-    }
-  } catch (err) {
-    const detail = err.response?.data?.message || err.message;
-    console.log(`⚠️ Crear contacto: ${err.response?.status} ${String(detail).slice(0, 200)}`);
-  }
-
-  return null;
-}
-
-// ── Confirmar una reserva en Wix ──────────────────────────────
-// Una reserva en estado CREATED existe pero NO aparece en el calendario ni
-// bloquea el horario. Hay que confirmarla explícitamente.
-async function confirmWixBooking(bookingId, revision) {
-  const attempts = [
-    {
-      url: `https://www.wixapis.com/_api/bookings-service/v2/bookings/${bookingId}/confirm`,
-      body: {
-        ...(revision && { revision: String(revision) }),
-        participantNotification: { notifyParticipants: true },
-      },
-    },
-    {
-      url: `https://www.wixapis.com/bookings/v2/confirmation/${bookingId}:confirmOrDecline`,
-      body: {
-        ...(revision && { revision: String(revision) }),
-        paymentStatus: "NOT_PAID",
-      },
-    },
-  ];
-
-  for (const attempt of attempts) {
-    try {
-      const resp = await axios.post(attempt.url, attempt.body, { headers: wixHeaders });
-      const status = resp.data?.booking?.status || "CONFIRMED";
-      console.log(`✅ Reserva confirmada — estado: ${status}`);
-      return status;
-    } catch (err) {
-      const detail = err.response?.data?.message
-        || err.response?.data?.details?.applicationError?.description
-        || err.message;
-      console.log(`⚠️ Confirm ${attempt.url.split("wixapis.com")[1].split("/").pop()}: ${err.response?.status} ${String(detail).slice(0, 200)}`);
-    }
-  }
-  return null;
-}
-
-async function createWixBooking(slotId, name, email, phone) {
+// ── Crear reserva en sakros.cl ────────────────────────────────
+// Con email se usa la reserva de la web: el paciente recibe su correo, el
+// profesional la invitación de calendario y la clínica el aviso. Sin email
+// se registra directo en la base de datos (si está configurada).
+async function createBooking(slotId, name, email, phone) {
   const entry = slotCache[slotId];
   if (!entry) {
     console.error(`❌ slot_id desconocido o expirado: ${slotId}`);
@@ -417,142 +190,71 @@ async function createWixBooking(slotId, name, email, phone) {
     };
   }
 
-  const { rawSlot, timeZone, serviceKey } = entry;
-  const serviceId = WIX_SERVICES[serviceKey];
-
-  // Revalidar el slot y traer el recurso (staff), que la lista no devuelve poblado
-  const full = await enrichSlot(serviceId, rawSlot, timeZone);
-
-  // Wix devuelve locationType "BUSINESS" en disponibilidad pero exige "OWNER_BUSINESS" al reservar
-  const LOCATION_TYPE_MAP = {
-    BUSINESS: "OWNER_BUSINESS",
-    OWNER_BUSINESS: "OWNER_BUSINESS",
-    CUSTOM: "CUSTOM",
-    OWNER_CUSTOM: "OWNER_CUSTOM",
-  };
-
-  const rawLocation = full.location || rawSlot.location || null;
-  const location = rawLocation
-    ? { ...rawLocation, locationType: LOCATION_TYPE_MAP[rawLocation.locationType] || "OWNER_BUSINESS" }
-    : { locationType: "OWNER_BUSINESS" };
-
-  // Recurso: preferir el del slot enriquecido; si no, resolverlo por scheduleId
-  const scheduleId = full.scheduleId || rawSlot.scheduleId || null;
-  let resourceId = extractResourceId(full.availableResources?.[0])
-    || extractResourceId(rawSlot.availableResources?.[0]);
-
-  if (!resourceId && scheduleId) {
-    const resolved = await getResourceByScheduleId(scheduleId);
-    if (resolved && GUID_RE.test(resolved)) resourceId = resolved;
+  const { serviceKey, professionalId, professionalName, date, time } = entry;
+  const esRest = serviceKey === "rest";
+  let serviceId = entry.serviceId;
+  if (esRest) {
+    const restId = await getSakrosServiceId("metodo-rest");
+    if (restId) serviceId = restId;
   }
-
-  if (resourceId) {
-    console.log(`👤 Recurso resuelto: ${resourceId}`);
-  } else {
-    console.log("⚠️ Sin recurso válido — se omite (skipAvailabilityValidation debería cubrirlo)");
-  }
-
-  const slot = {
-    serviceId,
-    startDate: full.localStartDate || rawSlot.localStartDate,
-    endDate: full.localEndDate || rawSlot.localEndDate,
-    timezone: timeZone,
-    location,
-    ...(scheduleId && { scheduleId }),
-    ...(resourceId && { resource: { id: resourceId } }),
-  };
-
-  // Vincular un Contacto del CRM para que Wix pueda enviar el correo al paciente
-  const contactId = await findOrCreateWixContact(name, email, phone);
-
-  const bookingBody = {
-    booking: {
-      bookedEntity: { slot },
-      contactDetails: {
-        ...(contactId && { contactId }),
-        firstName: name.split(" ")[0],
-        lastName: name.split(" ").slice(1).join(" ") || ".",
-        ...(email && { email }),
-        ...(phone && { phone }),
-      },
-      numberOfParticipants: 1,
-      selectedPaymentOption: "OFFLINE",
-    },
-    options: {
-      flowControlSettings: {
-        skipAvailabilityValidation: true,
-        skipBusinessConfirmation: true,
-        skipSelectedPaymentOptionValidation: true,
-      },
-      // La automatización "Se reserva una sesión" de Wix está condicionada a que
-      // esta bandera sea verdadera. El disparador es la CREACIÓN de la reserva,
-      // por eso no basta con activarla al confirmar.
-      participantNotification: { notifyParticipants: true },
-    },
-  };
-
-  console.log("📤 Wix booking request:", JSON.stringify(bookingBody));
+  const notes = [esRest ? "Método R.E.S.T. acompañado (online)" : null, "Agendado por OsteoJuaco (Instagram)"]
+    .filter(Boolean)
+    .join(" · ");
 
   try {
-    const response = await axios.post(
-      "https://www.wixapis.com/_api/bookings-service/v2/bookings",
-      bookingBody,
-      { headers: wixHeaders }
-    );
-
-    const booking = response.data?.booking || {};
-    const bookingId = booking.id || booking._id || null;
-    let status = booking.status || "CREATED";
-    console.log(`📋 Reserva creada: ${bookingId} (${status})`);
-
-    // CREATED no aparece en el calendario — hay que confirmarla
-    if (status !== "CONFIRMED" && bookingId) {
-      const confirmed = await confirmWixBooking(bookingId, booking.revision);
-      if (confirmed) status = confirmed;
+    let bookingId = null;
+    if (email) {
+      const { data } = await axios.post(
+        `${SAKROS_SITE_URL}/api/bookings`,
+        {
+          service_id: serviceId,
+          professional_id: professionalId,
+          booking_date: date,
+          start_time: time,
+          client_name: name,
+          client_email: email,
+          client_phone: phone || null,
+          // El R.E.S.T. se paga antes (link del programa); el resto en la clínica.
+          payment_method: esRest ? "online_webpay" : "in_clinic",
+          notes,
+        },
+        { timeout: 20000 }
+      );
+      bookingId = data?.booking?.id || null;
+    } else {
+      bookingId = await insertSakrosBooking({ serviceId, professionalId, date, time, name, phone, notes });
+      if (!bookingId) {
+        return {
+          success: false,
+          error: "Para reservar necesito su email (ahí le llega la confirmación). Pídeselo amablemente y vuelve a intentar con el mismo slot_id.",
+        };
+      }
     }
-
-    // Copia en el calendario nuevo de Sakros (no bloquea si falla)
-    await createSakrosBooking(serviceKey, slot, name, email, phone, bookingId);
-
-    const detalle = {
-      servicio: SERVICE_LABELS[serviceKey] || serviceKey,
-      fecha: formatSlotDate(slot.startDate),
-      direccion: serviceKey === "rest"
-        ? "Online — te enviaremos el link de la videollamada"
-        : (location.formattedAddress || "Clínica Sakros, Viña del Mar"),
-      paciente: name,
-      serviceKey,
-    };
-
-    if (status === "CONFIRMED") {
-      return { success: true, bookingId, status, detalle };
-    }
+    delete slotCache[slotId];
+    console.log(`📋 Reserva creada en sakros.cl: ${bookingId}`);
 
     return {
       success: true,
       bookingId,
-      status,
-      detalle,
-      nota: "La reserva quedó registrada pero PENDIENTE de confirmación por la clínica. Dile al paciente que su solicitud quedó tomada y que la clínica le confirmará el horario a la brevedad. NO le digas que está confirmada.",
+      status: "CONFIRMED",
+      detalle: {
+        servicio: SERVICE_LABELS[serviceKey] || serviceKey,
+        fecha: formatSlotDate(`${date}T${time}:00`),
+        profesional: professionalName,
+        direccion: esRest
+          ? "Online — te enviaremos el link de la videollamada"
+          : "9 Norte 555, Edificio Emporium, Of. 201, Viña del Mar",
+        paciente: name,
+        serviceKey,
+      },
     };
   } catch (error) {
     const status = error.response?.status;
-    const data = error.response?.data;
-    console.error("❌ Error Wix booking:", status, JSON.stringify(data || error.message));
-
-    // Diagnóstico legible para Claude
-    let hint = "No se pudo crear la reserva.";
-    const msg = data?.message || data?.details?.applicationError?.description || "";
-    if (/SLOT_NOT_AVAILABLE|No available slot/i.test(msg)) {
-      hint = "Ese horario ya fue tomado o el recurso no está disponible.";
-    } else if (/permission|unauthorized|forbidden/i.test(msg) || status === 403) {
-      hint = "La API key de Wix no tiene permisos suficientes para crear reservas.";
-    }
-
-    return {
-      success: false,
-      error: `${hint} Discúlpate brevemente y sugiere al paciente agendar en www.sakros.cl o llamar a la secretaria al +56945399692.`,
-    };
+    console.error("❌ Error reserva sakros.cl:", status, JSON.stringify(error.response?.data || error.message));
+    const hint = status === 409
+      ? "Ese horario acaba de ser tomado por otra persona. Vuelve a consultar disponibilidad y ofrécele otras horas."
+      : "No se pudo crear la reserva. Discúlpate brevemente y sugiere al paciente agendar en www.sakros.cl/reserva o llamar a la secretaria al +56945399692.";
+    return { success: false, error: hint };
   }
 }
 
@@ -565,7 +267,7 @@ function formatSlotDate(isoDate) {
   return `${days[d.getDay()]} ${d.getDate()} de ${months[d.getMonth()]} a las ${d.getHours().toString().padStart(2,"0")}:${d.getMinutes().toString().padStart(2,"0")}`;
 }
 
-// ── Calendario nuevo de Sakros (Supabase REST) ───────────────
+// ── Base de datos de Sakros (Supabase REST, opcional) ────────
 const sakrosEnabled = () => Boolean(SAKROS_SUPABASE_URL && SAKROS_SUPABASE_KEY);
 const sakrosHeaders = () => ({
   apikey: SAKROS_SUPABASE_KEY,
@@ -573,124 +275,61 @@ const sakrosHeaders = () => ({
   "Content-Type": "application/json",
 });
 
-// Servicio y profesional del calendario nuevo para cada servicio de Wix.
-// Kinesiología: mañana Anikken, desde las 17:00 Camilo (igual que la agenda).
-function sakrosTarget(serviceKey, localStart) {
-  const hour = Number(String(localStart || "").slice(11, 13));
-  switch (serviceKey) {
-    case "osteopatia":   return { service: "osteopatia", pro: "joaquin" };
-    case "posturologia": return { service: "posturologia", pro: "anikken" };
-    case "motion":       return { service: "estudio-biomecanico", pro: "edison" };
-    case "rest":         return { service: "metodo-rest", pro: "joaquin" };
-    case "kinesiologia": return { service: "kinesiologia", pro: hour >= 17 ? "camilo" : "anikken" };
-    default:             return null;
-  }
-}
-
-let sakrosIds = null;
-let sakrosIdsTime = 0;
-async function getSakrosIds() {
-  if (sakrosIds && Date.now() - sakrosIdsTime < 3600000) return sakrosIds;
-  const base = `${SAKROS_SUPABASE_URL}/rest/v1`;
-  const [pros, svcs] = await Promise.all([
-    axios.get(`${base}/professionals?select=id,slug`, { headers: sakrosHeaders() }),
-    axios.get(`${base}/services?select=id,slug`, { headers: sakrosHeaders() }),
-  ]);
-  sakrosIds = {
-    pro: Object.fromEntries(pros.data.map(p => [p.slug, p.id])),
-    service: Object.fromEntries(svcs.data.map(s => [s.slug, s.id])),
-  };
-  sakrosIdsTime = Date.now();
-  return sakrosIds;
-}
-
-const toMin = (t) => { const [h, m] = String(t).slice(0, 5).split(":").map(Number); return h * 60 + m; };
-
-// Reservas no canceladas del calendario nuevo entre dos fechas (YYYY-MM-DD).
-async function getSakrosBusy(fromDate, toDate) {
-  const { data } = await axios.get(
-    `${SAKROS_SUPABASE_URL}/rest/v1/bookings?select=professional_id,booking_date,start_time,end_time` +
-      `&status=neq.cancelled&booking_date=gte.${fromDate}&booking_date=lte.${toDate}`,
-    { headers: sakrosHeaders() }
-  );
-  return data || [];
-}
-
-// Quita los slots de Wix que chocan con una reserva del calendario nuevo.
-async function filterBySakros(serviceKey, slots) {
-  if (!sakrosEnabled() || slots.length === 0) return slots;
-  try {
-    const ids = await getSakrosIds();
-    const dates = slots.map(s => String(s.localStartDate).slice(0, 10)).sort();
-    const busy = await getSakrosBusy(dates[0], dates[dates.length - 1]);
-    return slots.filter(s => {
-      const target = sakrosTarget(serviceKey, s.localStartDate);
-      const proId = target && ids.pro[target.pro];
-      if (!proId) return true;
-      const date = String(s.localStartDate).slice(0, 10);
-      const start = toMin(String(s.localStartDate).slice(11, 16));
-      const end = s.localEndDate ? toMin(String(s.localEndDate).slice(11, 16)) : start + 60;
-      return !busy.some(b =>
-        b.professional_id === proId && b.booking_date === date &&
-        toMin(b.start_time) < end && (b.end_time ? toMin(b.end_time) : toMin(b.start_time) + 60) > start
-      );
-    });
-  } catch (err) {
-    console.error("⚠️ No se pudo consultar el calendario nuevo:", err.response?.status, err.message);
-    return slots; // si falla, se sigue solo con Wix
-  }
-}
-
-// Registra en el calendario nuevo una reserva ya creada en Wix.
-// La ficha del paciente la crea/vincula el trigger de la base de datos.
-async function createSakrosBooking(serviceKey, slot, name, email, phone, wixBookingId) {
+const serviceIdCache = {};
+async function getSakrosServiceId(slug) {
   if (!sakrosEnabled()) return null;
+  if (serviceIdCache[slug]) return serviceIdCache[slug];
   try {
-    const target = sakrosTarget(serviceKey, slot.startDate);
-    const ids = await getSakrosIds();
-    const proId = target && ids.pro[target.pro];
-    const serviceId = target && ids.service[target.service];
-    if (!proId || !serviceId) {
-      console.error(`⚠️ Sin mapeo en el calendario nuevo para ${serviceKey}`);
-      return null;
-    }
-    const startTime = String(slot.startDate).slice(11, 16);
-    const endTime = slot.endDate ? String(slot.endDate).slice(11, 16) : null;
-    const { data } = await axios.post(
-      `${SAKROS_SUPABASE_URL}/rest/v1/bookings`,
-      {
-        professional_id: proId,
-        service_id: serviceId,
-        booking_date: String(slot.startDate).slice(0, 10),
-        start_time: startTime,
-        end_time: endTime || `${String(Math.floor(toMin(startTime) / 60) + 1).padStart(2, "0")}:${startTime.slice(3)}`,
-        client_name: name,
-        client_email: email || "",
-        client_phone: phone || null,
-        status: "confirmed",
-        payment_status: "pending",
-        notes: [
-          serviceKey === "rest" ? "Método R.E.S.T. acompañado" : null,
-          "Agendado por OsteoJuaco (Instagram)",
-          wixBookingId ? `Wix: ${wixBookingId}` : null,
-        ].filter(Boolean).join(" · "),
-      },
-      { headers: { ...sakrosHeaders(), Prefer: "return=representation" } }
+    const { data } = await axios.get(
+      `${SAKROS_SUPABASE_URL}/rest/v1/services?select=id&slug=eq.${encodeURIComponent(slug)}`,
+      { headers: sakrosHeaders() }
     );
-    const id = data?.[0]?.id || null;
-    console.log(`🗓️ Reserva registrada en el calendario nuevo: ${id}`);
-    return id;
+    serviceIdCache[slug] = data?.[0]?.id || null;
+    return serviceIdCache[slug];
   } catch (err) {
-    console.error("⚠️ No se pudo registrar en el calendario nuevo:", err.response?.status, JSON.stringify(err.response?.data || err.message));
+    console.error("⚠️ No se pudo leer el servicio:", err.response?.status, err.message);
     return null;
   }
 }
+
+// Reserva directa (sin email). La ficha del paciente la crea/vincula el
+// trigger de la base de datos.
+async function insertSakrosBooking({ serviceId, professionalId, date, time, name, phone, notes }) {
+  if (!sakrosEnabled()) return null;
+  const [h, m] = time.split(":").map(Number);
+  const end = `${String(h + 1).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  try {
+    const { data } = await axios.post(
+      `${SAKROS_SUPABASE_URL}/rest/v1/bookings`,
+      {
+        professional_id: professionalId,
+        service_id: serviceId,
+        booking_date: date,
+        start_time: time,
+        end_time: end,
+        client_name: name,
+        client_email: "",
+        client_phone: phone || null,
+        status: "confirmed",
+        payment_status: "pending",
+        payment_method: "in_clinic",
+        notes,
+      },
+      { headers: { ...sakrosHeaders(), Prefer: "return=representation" } }
+    );
+    return data?.[0]?.id || null;
+  } catch (err) {
+    console.error("⚠️ No se pudo registrar la reserva:", err.response?.status, JSON.stringify(err.response?.data || err.message));
+    return null;
+  }
+}
+
 
 // ── Tools para Claude ─────────────────────────────────────────
 const CLAUDE_TOOLS = [
   {
     name: "consultar_disponibilidad",
-    description: "Consulta los horarios disponibles en Clínica Sakros para los próximos 7 días. Usa esta herramienta cuando el paciente quiera agendar una cita, pida horarios, o acepte tu sugerencia de derivación a un servicio. NO la uses solo para informar sobre servicios — úsala cuando haya intención real de agendar.",
+    description: "Consulta los horarios disponibles en Clínica Sakros para los próximos 14 días (agenda de www.sakros.cl). Usa esta herramienta cuando el paciente quiera agendar una cita, pida horarios, o acepte tu sugerencia de derivación a un servicio. NO la uses solo para informar sobre servicios — úsala cuando haya intención real de agendar.",
     input_schema: {
       type: "object",
       properties: {
@@ -705,7 +344,7 @@ const CLAUDE_TOOLS = [
   },
   {
     name: "crear_reserva",
-    description: "Crea una reserva REAL en Clínica Sakros. Usa esta herramienta SOLO cuando tengas: 1) el slot_id exacto que el paciente eligió (de los que devolvió consultar_disponibilidad), 2) su nombre completo, y 3) su email o teléfono.",
+    description: "Crea una reserva REAL en la agenda de Clínica Sakros (www.sakros.cl). Usa esta herramienta SOLO cuando tengas: 1) el slot_id exacto que el paciente eligió (de los que devolvió consultar_disponibilidad), 2) su nombre completo y 3) su email (ahí le llega la confirmación y el recordatorio). Pide también su teléfono si lo quiere dar.",
     input_schema: {
       type: "object",
       properties: {
@@ -719,7 +358,7 @@ const CLAUDE_TOOLS = [
         },
         email: {
           type: "string",
-          description: "Email del paciente (vacío si solo dio teléfono)",
+          description: "Email del paciente. Pídelo siempre: ahí le llega la confirmación y el recordatorio del día anterior.",
         },
         telefono: {
           type: "string",
@@ -751,11 +390,7 @@ async function executeTool(toolName, toolInput, senderId) {
 
   if (toolName === "consultar_disponibilidad") {
     const serviceKey = toolInput.servicio;
-    const serviceId = WIX_SERVICES[serviceKey];
-    if (!serviceId) {
-      return JSON.stringify({ error: `Servicio "${serviceKey}" no encontrado` });
-    }
-    const result = await getAvailableSlots(serviceId, serviceKey);
+    const result = await getAvailableSlots(serviceKey);
     if (Array.isArray(result)) {
       console.log(`📅 Slots ofrecidos: ${result.length}`);
       if (result.length === 0) {
@@ -769,14 +404,14 @@ async function executeTool(toolName, toolInput, senderId) {
   }
 
   if (toolName === "crear_reserva") {
-    const result = await createWixBooking(
+    const result = await createBooking(
       toolInput.slot_id,
       toolInput.nombre,
       toolInput.email || "",
       toolInput.telefono || ""
     );
 
-    // Comprobante propio por DM: no dependemos del correo de Wix
+    // Comprobante por DM (además del correo de sakros.cl si dio email)
     if (result.success && result.detalle && senderId) {
       const d = result.detalle;
       const confirmada = result.status === "CONFIRMED";
@@ -792,6 +427,7 @@ async function executeTool(toolName, toolInput, senderId) {
         "",
         `🩺 *Servicio:* ${d.servicio}`,
         `📅 *Fecha:* ${d.fecha}`,
+        ...(d.profesional ? [`👨‍⚕️ *Profesional:* ${d.profesional}`] : []),
         `📍 *Dirección:* ${d.direccion}`,
         `👤 *A nombre de:* ${d.paciente}`,
         ...(d.serviceKey === "rest" && REST_PAYMENT_URL
@@ -1015,7 +651,7 @@ Tienes acceso a dos herramientas para gestionar citas reales en Clínica Sakros 
 1. Cuando detectes intención de agendar, usa consultar_disponibilidad con el servicio apropiado
 2. La herramienta devuelve una lista de horarios, cada uno con un "slot_id" y un "horario" legible
 3. Muestra al paciente SOLO los textos de "horario" (nunca los slot_id, son internos)
-4. Cuando el paciente elija uno, pídele nombre completo y email o teléfono
+4. Cuando el paciente elija uno, pídele nombre completo, email y teléfono (el email es necesario: ahí le llega la confirmación)
 5. Llama a crear_reserva pasando el slot_id EXACTO del horario que eligió
 6. Si la reserva es exitosa, confirma con entusiasmo mencionando día y hora
 7. Si el resultado trae una "nota", síguela al pie de la letra: NUNCA le digas al paciente que su hora está confirmada si el sistema no la confirmó
