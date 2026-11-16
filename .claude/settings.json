@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Supabase"
+    ],
+    "ask": [
+      "mcp__Supabase__pause_project",
+      "mcp__Supabase__delete_branch",
+      "mcp__Supabase__reset_branch",
+      "mcp__Supabase__create_project"
+    ]
+  }
+}
