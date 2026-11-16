@@ -60,6 +60,70 @@ const SAKROS_SUPABASE_KEY = process.env.SAKROS_SUPABASE_SERVICE_KEY;
 // ── Memoria de conversaciones ─────────────────────────────────
 const conversations = {};
 
+// ── Contexto de la publicación donde comentaron ──────────────
+// Cuando alguien comenta una palabra clave (DOLOR, DORMIR, KINE…) el bot lee el
+// caption de ESE post en Instagram. Con eso: (1) Claude Haiku escribe el primer
+// párrafo del DM conectando con el tema del post, y (2) el asistente de DMs
+// recuerda de qué post vino la persona durante 7 días. No hay que cargar nada a
+// mano: cada post nuevo trae su propio contexto en el caption.
+const PERSONALIZE_MODEL = process.env.PERSONALIZE_MODEL || "claude-haiku-5-5";
+const CONTEXTO_POST_MS = 7 * 24 * 60 * 60 * 1000;
+const postContext = {};          // userId → { keyword, caption, at }
+const captionCache = new Map();  // mediaId → { caption, permalink, at }
+
+async function contextoDelPost(mediaId) {
+  const hit = captionCache.get(mediaId);
+  if (hit && Date.now() - hit.at < 60 * 60 * 1000) return hit;
+  try {
+    const r = await axios.get(`https://graph.instagram.com/v25.0/${mediaId}`, {
+      params: { fields: "caption,media_type,permalink" },
+      headers: { Authorization: `Bearer ${PAGE_ACCESS_TOKEN}` },
+      timeout: 8000,
+    });
+    const post = { caption: (r.data.caption || "").slice(0, 2500), permalink: r.data.permalink, at: Date.now() };
+    captionCache.set(mediaId, post);
+    return post;
+  } catch (e) {
+    console.error("⚠️ No se pudo leer el caption del post:", e.response?.data?.error?.message || e.message);
+    return null;
+  }
+}
+
+async function introPersonalizada(caption, keyword) {
+  try {
+    const r = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: PERSONALIZE_MODEL,
+        max_tokens: 160,
+        system:
+          "Escribes el primer párrafo de un DM de Instagram de Joaquín Adi (osteópata y kinesiólogo, Viña del Mar) " +
+          "para alguien que comentó una palabra clave en su publicación. Español latinoamericano neutro con tuteo, sin voseo " +
+          "ni modismos chilenos. Empieza con «¡Hola!». Máximo 2 frases y 45 palabras. Conecta con el tema concreto de la " +
+          "publicación y con el siguiente paso (evaluarlo en consulta, o el Método R.E.S.T. si la palabra es DORMIR). " +
+          "Sin links, sin diagnósticos, sin prometer resultados, como máximo un emoji. Devuelve solo el párrafo.",
+        messages: [{ role: "user", content: `Palabra clave: ${keyword.toUpperCase()}\n\nCaption de la publicación:\n${caption}` }],
+      },
+      {
+        headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        timeout: 12000,
+      }
+    );
+    const texto = (r.data.content || []).find(b => b.type === "text")?.text?.trim();
+    return texto && texto.length < 500 ? texto : null;
+  } catch (e) {
+    console.error("⚠️ No se pudo personalizar el DM (se usa el texto fijo):", e.response?.data?.error?.message || e.message);
+    return null;
+  }
+}
+
+function contextoParaClaude(userId) {
+  const c = postContext[userId];
+  if (!c || Date.now() - c.at > CONTEXTO_POST_MS) return "";
+  return `\n\n## CONTEXTO DE ESTA PERSONA\nLlegó comentando «${c.keyword.toUpperCase()}» en esta publicación de Joaquín:\n«${c.caption}»\nSi pregunta por el tema de la publicación, responde en coherencia con lo que dice ahí, sin agregar datos que no estén.`;
+}
+
+
 // ── Pausa cuando Joaquín responde a mano ──────────────────────
 // Si Joaquín escribe él mismo en un DM (desde la app de Instagram), el bot deja
 // de responder a esa persona durante 12 horas para no cruzarse con él.
@@ -486,7 +550,7 @@ async function callClaude(senderId) {
       {
         model:      "claude-sonnet-4-6",
         max_tokens: 500,
-        system:     SYSTEM_PROMPT,
+        system:     SYSTEM_PROMPT + contextoParaClaude(senderId),
         tools:      CLAUDE_TOOLS,
         messages:   messages,
       },
@@ -842,7 +906,7 @@ app.post("/webhook", async (req, res) => {
         // Buscar keyword de lead magnet
         for (const [keyword, magnet] of Object.entries(LEAD_MAGNETS)) {
           if (coincideKeyword(commentText, keyword, magnet) && !magnet.disabled) {
-            handleLeadMagnetComment(commentId, commenterId, commenterUsername, keyword).catch(err => {
+            handleLeadMagnetComment(commentId, commenterId, commenterUsername, keyword, comment.media?.id).catch(err => {
               console.error(`❌ Error en lead magnet "${keyword}":`, err.message);
             });
             break; // solo un lead magnet por comentario
@@ -1038,6 +1102,8 @@ const LEAD_MAGNETS = {
     images: [`${GITHUB_ASSETS}/dormir/dormir_guia.jpg`],
     pdf: null,
     commentReply: "¡Te lo envío al DM! 📩",
+    personalizar: true,
+    dmLink: "Te dejo tu guía sobre qué sucede cuando no dormimos bien.",
     dmText: "¡Hola! 🌙 Aquí tienes tu guía sobre qué sucede cuando no dormimos bien.",
     dmFollowUp: "Si llevas tiempo sin descansar bien, el Método R.E.S.T. es un programa de 21 días que trabaja el sueño desde la raíz → www.metodorest.cl 😊\n\nCualquier duda, estoy aquí para ayudarte 💪",
   },
@@ -1070,6 +1136,8 @@ const LEAD_MAGNETS = {
     images: [],
     pdf: null,
     commentReply: "¡Te lo envío al DM! 📩",
+    personalizar: true,
+    dmLink: "Puedes agendar tu evaluación en Clínica Sakros (Viña del Mar) aquí 👉 https://www.sakros.cl/reserva",
     dmText: "¡Hola! 🙌 Si llevas tiempo con dolor, el primer paso es una buena evaluación: entender qué lo está manteniendo, no solo dónde duele.\n\nPuedes agendar tu evaluación en Clínica Sakros (Viña del Mar) aquí 👉 https://www.sakros.cl/reserva",
     dmFollowUp: "¿Prefieres coordinar por WhatsApp? Escríbenos al +56 9 4539 9692 📲",
   },
@@ -1078,6 +1146,8 @@ const LEAD_MAGNETS = {
     images: [],
     pdf: null,
     commentReply: "¡Te lo envío al DM! 📩",
+    personalizar: true,
+    dmLink: "Puedes agendar con el equipo de kinesiología de Clínica Sakros (Viña del Mar) aquí 👉 https://www.sakros.cl/reserva",
     dmText: "¡Hola! 💪 Aquí puedes agendar con el equipo de kinesiología de Clínica Sakros (Viña del Mar) 👉 https://www.sakros.cl/reserva",
     dmFollowUp: "Si no sabes si te conviene kinesiología u osteopatía, respóndeme por aquí y lo vemos. También puedes escribirnos por WhatsApp al +56 9 4539 9692 📲",
   },
@@ -1196,7 +1266,7 @@ async function sendInstagramImage(recipientId, imageUrl) {
 }
 
 // ── Manejar comentario con keyword de lead magnet ─────────────
-async function handleLeadMagnetComment(commentId, commenterId, commenterUsername, keyword) {
+async function handleLeadMagnetComment(commentId, commenterId, commenterUsername, keyword, mediaId) {
   const magnet = LEAD_MAGNETS[keyword];
   if (!magnet || magnet.disabled) return;
 
@@ -1223,7 +1293,14 @@ async function handleLeadMagnetComment(commentId, commenterId, commenterUsername
   // Instagram solo permite UNA private reply por comentario, así que consolidamos
   // el contenido en un único mensaje. En flujos conversacionales (curso) NO se
   // agrega el link del PDF: ahí el material va por otro camino (fotos tras el número).
-  const partes = [magnet.dmText];
+  // Si el post tiene caption, el primer párrafo conecta con lo que la persona
+  // acaba de ver (lo escribe Claude Haiku a partir del caption del post).
+  const post = mediaId ? await contextoDelPost(mediaId) : null;
+  if (post?.caption) {
+    postContext[commenterId] = { keyword, caption: post.caption, at: Date.now() };
+  }
+  const intro = magnet.personalizar && post?.caption ? await introPersonalizada(post.caption, keyword) : null;
+  const partes = [intro ? `${intro}\n\n${magnet.dmLink}` : magnet.dmText];
   if (magnet.pdf && !magnet.conversational) {
     partes.push(`\n📄 Descarga aquí: ${magnet.pdf}`);
   }
